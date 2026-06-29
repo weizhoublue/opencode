@@ -117,6 +117,128 @@ describe("session.retry.delay", () => {
   )
 })
 
+describe("session.retry quota limits", () => {
+  test("isZenLimitErrorType accepts zen handler limit types", () => {
+    for (const type of SessionRetry.ZEN_LIMIT_ERROR_TYPES) {
+      expect(SessionRetry.isZenLimitErrorType(type)).toBe(true)
+    }
+    expect(SessionRetry.isZenLimitErrorType("too_many_requests")).toBe(false)
+  })
+
+  test("isQuotaOrRateLimitPayload detects zen limit error bodies", () => {
+    for (const type of SessionRetry.ZEN_LIMIT_ERROR_TYPES) {
+      expect(
+        SessionRetry.isQuotaOrRateLimitPayload({
+          type: "error",
+          error: { type, message: "limited" },
+        }),
+      ).toBe(true)
+    }
+    expect(
+      SessionRetry.isQuotaOrRateLimitPayload({ type: "error", error: { type: "too_many_requests" } }),
+    ).toBe(true)
+    expect(SessionRetry.isQuotaOrRateLimitPayload({ code: "insufficient_quota" })).toBe(true)
+    expect(SessionRetry.isQuotaOrRateLimitPayload({ error: { message: "no_kv_space" } })).toBe(false)
+  })
+
+  test("isQuotaOrRateLimitAPIError matches 429 bodies but not generic retryable 429", () => {
+    const limit = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Rate limit exceeded",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({
+          type: "error",
+          error: { type: "RateLimitError", message: "Rate limit exceeded" },
+        }),
+      }).toObject(),
+    )
+    expect(SessionRetry.isQuotaOrRateLimitAPIError(limit)).toBe(true)
+
+    const transient = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "slow down",
+        isRetryable: true,
+        statusCode: 429,
+      }).toObject(),
+    )
+    expect(SessionRetry.isQuotaOrRateLimitAPIError(transient)).toBe(false)
+  })
+
+  test("isQuotaOrRateLimitRetryStatus prefers action reasons over message text", () => {
+    expect(
+      SessionRetry.isQuotaOrRateLimitRetryStatus({
+        type: "retry",
+        attempt: 1,
+        message: "超出速率限制",
+        next: Date.now() + 60_000,
+      }),
+    ).toBe(false)
+
+    expect(
+      SessionRetry.isQuotaOrRateLimitRetryStatus({
+        type: "retry",
+        attempt: 1,
+        message: "超出速率限制",
+        action: {
+          reason: "account_rate_limit",
+          provider: "opencode",
+          title: "Usage limit reached",
+          message: "Rate limit exceeded",
+          label: "retry later",
+        },
+        next: Date.now() + 60_000,
+      }),
+    ).toBe(true)
+
+    expect(
+      SessionRetry.isQuotaOrRateLimitRetryStatus({
+        type: "retry",
+        attempt: 1,
+        message: "Rate limit exceeded",
+        next: Date.now() + 60_000,
+      }),
+    ).toBe(true)
+  })
+
+  test("maps RateLimitError to account_rate_limit retry action", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Rate limit exceeded. Please try again later.",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({
+          type: "error",
+          error: { type: "RateLimitError", message: "Rate limit exceeded. Please try again later." },
+        }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toMatchObject({
+      message: "Rate limit exceeded. Please try again later.",
+      action: { reason: "account_rate_limit" },
+    })
+  })
+
+  test("maps BlackUsageLimitError to account_rate_limit retry action", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Subscription quota exceeded. Retry in 5min.",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({
+          type: "error",
+          error: { type: "BlackUsageLimitError", message: "Subscription quota exceeded. Retry in 5min." },
+        }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toMatchObject({
+      action: { reason: "account_rate_limit" },
+    })
+  })
+})
+
 describe("session.retry.retryable", () => {
   test("maps too_many_requests json messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
