@@ -25,6 +25,7 @@ import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { SessionRetry } from "@/session/retry"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -781,16 +782,26 @@ export const RunCommand = effectCmd({
                 err = String(props.error.data.message)
               }
               error = error ? error + EOL + err : err
-              if (emit("error", { error: props.error })) continue
+              const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
+              if (emit("error", { error: props.error })) {
+                if (limit) return error
+                continue
+              }
               UI.error(err)
+              if (limit) return error
             }
 
-            if (
-              event.type === "session.status" &&
-              event.properties.sessionID === sessionID &&
-              event.properties.status.type === "idle"
-            ) {
-              break
+            if (event.type === "session.status" && event.properties.sessionID === sessionID) {
+              const status = event.properties.status
+              if (status.type === "retry" && SessionRetry.isQuotaOrRateLimitRetryStatus(status)) {
+                error = error ? error + EOL + status.message : status.message
+                if (emit("error", { error: status })) return error
+                UI.error(status.message)
+                return error
+              }
+              if (status.type === "idle") {
+                break
+              }
             }
 
             if (event.type === "permission.asked") {
