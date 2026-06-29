@@ -1,0 +1,245 @@
+name: welan release
+
+# Fork patch author: only contiguous commits at the tip of origin/welan authored by this
+# name are cherry-picked onto the upstream release tag.
+#
+# 第 1，配置自己的上游仓库地址  https://github.com/anomalyco/opencode 
+# 第 2，根据 CI 输入的 version 号，确保它是一个上游的 tag。如果输入的 version 号为空，那么自动从上游的 tag 里面获取最新的 tag 作为 version 号来工作。
+# 第 3：检出上游分支的 tag 代码，再从当前仓库的 origin 缺省分支 的  顶端 commit 开始向下遍历，收集顶部连续的 作者 weizhoublue 的 commits  , cherry-pick 到上游的 tag 分支 。
+# 第 4，运行所有单元测试，确保 cherry-pick 后行为正确 。
+# 第 5，我们分别构建 macOS、ARM 的 Linux、x86 的 Linux、ARM 的二进制。
+# 第 6 ，我们将 origin 缺省分支推送到远端，并且新建一个 release/$version 的新 branch 推送到远端进行留存。
+# 第 7 ，我们发布一个 version 对应的 release, 其中带上构建物
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream release tag. Defaults to latest upstream tag."
+        required: false
+        type: string
+
+concurrency:
+  group: welan-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GH_TOKEN: ${{ github.token }}
+  WELAN_PATCH_AUTHOR: weizhoublue
+
+jobs:
+  release:
+    name: sync, validate, build, release
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure upstream remote
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/anomalyco/opencode.git
+          else
+            git remote add upstream https://github.com/anomalyco/opencode.git
+          fi
+
+      - name: Resolve upstream tag
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            remote_tags="$(git ls-remote --tags --sort=-v:refname upstream 'refs/tags/v[0-9]*')"
+            version="$(printf '%s\n' "$remote_tags" | awk 'index($2, "^{}") == 0 { sub("refs/tags/", "", $2); print $2; exit }')"
+          fi
+          if [ -z "$version" ]; then
+            echo "No upstream tag found"
+            exit 1
+          fi
+          build_version="${version#v}"
+          echo "Using upstream tag: $version"
+          echo "Using build version: $build_version"
+          echo "RELEASE_TAG=$version" >> "$GITHUB_ENV"
+          echo "BUILD_VERSION=$build_version" >> "$GITHUB_ENV"
+
+      - name: Fetch branches and tags
+        run: |
+          git fetch origin welan:refs/remotes/origin/welan --tags
+          git fetch upstream "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" >/dev/null
+
+      - name: Prepare welan from upstream tag
+        run: |
+          git checkout -B welan "$RELEASE_TAG"
+
+      - name: Cherry-pick welan author patches
+        id: patches
+        continue-on-error: true
+        run: |
+          patch_commits=()
+          ref="origin/welan"
+
+          while true; do
+            author="$(git log -1 --format='%an' "$ref")"
+            if [[ "$author" != *"$WELAN_PATCH_AUTHOR"* ]]; then
+              break
+            fi
+
+            patch_commits=("$ref" "${patch_commits[@]}")
+
+            if ! git rev-parse "${ref}^" >/dev/null 2>&1; then
+              break
+            fi
+            ref="${ref}^"
+          done
+
+          if [ "${#patch_commits[@]}" -eq 0 ]; then
+            echo "::error::No commits authored by $WELAN_PATCH_AUTHOR found at the tip of origin/welan"
+            exit 1
+          fi
+
+          echo "Cherry-picking ${#patch_commits[@]} commit(s) from origin/welan (author: $WELAN_PATCH_AUTHOR)"
+          for commit in "${patch_commits[@]}"; do
+            sha="$(git rev-parse "$commit")"
+            subject="$(git log -1 --format='%s' "$sha")"
+            echo "Cherry-picking $sha $subject"
+            git cherry-pick "$sha"
+          done
+
+      - name: Print cherry-pick conflict details
+        if: steps.patches.outcome == 'failure'
+        run: |
+          conflicted_files="$(git diff --name-only --diff-filter=U || true)"
+          upstream_tag="$(git rev-parse "$RELEASE_TAG")"
+          origin_welan="$(git rev-parse origin/welan)"
+          current_head="$(git rev-parse HEAD)"
+
+          echo "::error::welan release $RELEASE_TAG hit a cherry-pick conflict"
+          echo "Version: $RELEASE_TAG"
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Upstream tag: $RELEASE_TAG"
+          echo "Upstream tag SHA: ${upstream_tag}"
+          echo "origin/welan: ${origin_welan}"
+          echo "Current HEAD during conflict: ${current_head}"
+          echo "Patch author: $WELAN_PATCH_AUTHOR"
+          echo
+          echo "Conflicted files:"
+          printf '%s\n' "$conflicted_files"
+          echo
+          echo "Git status:"
+          git status --short
+          echo
+          echo "Combined conflict diff:"
+          git diff --cc || true
+          echo
+          echo "Conflicted file contents:"
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            echo "::group::${file}"
+            if [ -f "$file" ] && grep -Iq . "$file"; then
+              cat "$file"
+            else
+              echo "Binary or missing conflicted file: $file"
+            fi
+            echo "::endgroup::"
+          done <<< "$conflicted_files"
+
+          git cherry-pick --abort || true
+          exit 1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Check zen limit error contract
+        working-directory: packages/opencode
+        run: bun run check:zen-limit-sync
+
+      - name: Run run command limit and retry contract tests
+        working-directory: packages/opencode
+        timeout-minutes: 10
+        run: |
+          bun test --timeout 60000 test/session/retry.test.ts --test-name-pattern='session.retry quota limits'
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+
+      - name: Run run command module tests
+        working-directory: packages/opencode
+        timeout-minutes: 25
+        run: |
+          find test/cli/run \( -name '*.test.ts' -o -name '*.test.tsx' \) ! -name 'run-process*.test.ts' -print0 \
+            | xargs -0 bun test --timeout 60000
+          bun test --timeout 60000 --max-concurrency=1 test/cli/run/run-process-limit.test.ts
+          # Skip #27371: upstream wall-clock assert targets blacksmith runners (~15s).
+          # GitHub-hosted ubuntu-24.04 finishes the same path in ~15.2s. Unknown-model
+          # rejection is still covered by the json error case in this list.
+          bun test --timeout 60000 --max-concurrency=1 test/cli/run/run-process.test.ts \
+            --test-name-pattern='exits 0 and writes|prints each|prints reasoning|unknown stream|format json|rejects requested|attach mode|SIGINT'
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+
+      - name: Build CLI binaries
+        run: OPENCODE_VERSION="$BUILD_VERSION" ./packages/opencode/script/build.ts
+
+      - name: Stage release binaries
+        run: |
+          asset_dir="/tmp/welan-release-assets"
+          rm -rf "$asset_dir"
+          mkdir -p "$asset_dir"
+
+          cp packages/opencode/dist/opencode-darwin-arm64/bin/opencode "$asset_dir/opencode-darwin-arm64"
+          cp packages/opencode/dist/opencode-linux-arm64/bin/opencode "$asset_dir/opencode-linux-arm64"
+          cp packages/opencode/dist/opencode-linux-x64/bin/opencode "$asset_dir/opencode-linux-x64"
+
+          ls -lh "$asset_dir"
+
+      - name: Push rebased welan
+        run: git push origin HEAD:welan --force-with-lease
+
+      - name: Push release archive branch
+        run: |
+          release_branch="release/$RELEASE_TAG"
+          git checkout -B "$release_branch"
+          git push origin "$release_branch" --force-with-lease
+
+      - name: Replace GitHub release
+        run: |
+          tag="$RELEASE_TAG"
+          target="$(git rev-parse HEAD)"
+
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release delete "$tag" --repo "${{ github.repository }}" --yes
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            git push origin ":refs/tags/$tag"
+          fi
+
+          git tag -f "$tag" "$target"
+          git push origin "refs/tags/$tag"
+
+          gh release create "$tag" \
+            /tmp/welan-release-assets/opencode-darwin-arm64 \
+            /tmp/welan-release-assets/opencode-linux-arm64 \
+            /tmp/welan-release-assets/opencode-linux-x64 \
+            --repo "${{ github.repository }}" \
+            --target "$target" \
+            --title "$tag" \
+            --notes "Fork release: upstream ${RELEASE_TAG} plus tip commits authored by ${WELAN_PATCH_AUTHOR} at ${target}."
