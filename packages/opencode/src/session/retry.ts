@@ -28,6 +28,48 @@ export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 
+/** Zen handler 429 limit error types — keep in sync with packages/console/.../zen/util/handler.ts */
+export const ZEN_LIMIT_ERROR_TYPES = [
+  "RateLimitError",
+  "FreeUsageLimitError",
+  "GoUsageLimitError",
+  "BlackUsageLimitError",
+] as const
+
+export type ZenLimitErrorType = (typeof ZEN_LIMIT_ERROR_TYPES)[number]
+
+export function isZenLimitErrorType(type: string): type is ZenLimitErrorType {
+  return (ZEN_LIMIT_ERROR_TYPES as readonly string[]).includes(type)
+}
+
+export function isQuotaOrRateLimitPayload(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const code = text(value.code)
+  const type = text(value.type)
+  if (/insufficient_quota|quota_exceeded|rate_limit/.test(code)) return true
+  if (type === "too_many_requests") return true
+  if (isZenLimitErrorType(type)) return true
+  if (isRecord(value.error)) return isQuotaOrRateLimitPayload(value.error)
+  return false
+}
+
+export function isQuotaOrRateLimitAPIError(error: unknown): boolean {
+  if (!isRecord(error) || error.name !== "APIError" || !isRecord(error.data)) return false
+  if (error.data.statusCode !== 429) return false
+  const body = text(error.data.responseBody)
+  if (isQuotaOrRateLimitPayload(parseJSON(body))) return true
+  return /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i.test(body)
+}
+
+export function isQuotaOrRateLimitRetryStatus(status: unknown): boolean {
+  if (!isRecord(status) || status.type !== "retry") return false
+  if (isRecord(status.action)) {
+    const reason = text(status.action.reason)
+    if (reason === "free_tier_limit" || reason === "account_rate_limit") return true
+  }
+  return /rate limit|too many requests|quota exceeded/i.test(text(status.message))
+}
+
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
@@ -73,7 +115,8 @@ export function retryable(error: Err, provider: string) {
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
     if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
-    if (error.data.responseBody?.includes("FreeUsageLimitError")) {
+    const zenType = zenLimitErrorType(parseJSON(error.data.responseBody))
+    if (zenType === "FreeUsageLimitError") {
       return {
         message: GO_UPSELL_MESSAGE,
         action: {
@@ -86,7 +129,7 @@ export function retryable(error: Err, provider: string) {
         },
       }
     }
-    if (error.data.responseBody?.includes("GoUsageLimitError")) {
+    if (zenType === "GoUsageLimitError") {
       const body = parseJSON(error.data.responseBody)
       const workspace = str(body?.metadata?.workspace)
       const limitName = str(body?.metadata?.limitName)
@@ -119,6 +162,9 @@ export function retryable(error: Err, provider: string) {
         },
       }
     }
+    if (zenType === "RateLimitError" || zenType === "BlackUsageLimitError") {
+      return accountRateLimitRetry(provider, error.data.message, "Usage limit reached")
+    }
     return { message: error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message }
   }
 
@@ -149,6 +195,34 @@ export function retryable(error: Err, provider: string) {
     return { message: "Rate Limited" }
   }
   return undefined
+}
+
+function text(value: unknown) {
+  return typeof value === "string" ? value : ""
+}
+
+function zenLimitErrorType(value: unknown): ZenLimitErrorType | undefined {
+  if (!isRecord(value)) return undefined
+  if (isRecord(value.error)) {
+    const type = text(value.error.type)
+    if (isZenLimitErrorType(type)) return type
+  }
+  const type = text(value.type)
+  if (isZenLimitErrorType(type)) return type
+  return undefined
+}
+
+function accountRateLimitRetry(provider: string, message: string, title: string): Retryable {
+  return {
+    message,
+    action: {
+      reason: "account_rate_limit",
+      provider,
+      title,
+      message,
+      label: "retry later",
+    },
+  }
 }
 
 function str(value: unknown) {
