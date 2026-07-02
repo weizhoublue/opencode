@@ -28,7 +28,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  GH_TOKEN: ${{ github.token }}
+  GH_TOKEN: ${{ secrets.WELAN_PAT }}
   WELAN_PATCH_AUTHOR: weizhoublue
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
+          token: ${{ env.GH_TOKEN }}
 
       - name: Configure git identity
         run: |
