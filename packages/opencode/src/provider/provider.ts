@@ -1508,6 +1508,8 @@ const layer = Layer.effect(
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
           if (provider.type === "api") {
+            const envKey = database[providerID]?.env.map((item) => envs[item]).find(Boolean)
+            if (envKey) continue
             mergeProvider(providerID, {
               source: "api",
               key: provider.key,
