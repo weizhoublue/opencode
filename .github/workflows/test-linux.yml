@@ -1,0 +1,41 @@
+name: welan-test-pr
+
+on:
+  push:
+    branches: [welan]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  test:
+    name: unit (linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@opencode.ai"
+          git config --global user.name "opencode"
+
+      - name: Run opencode tests
+        working-directory: packages/opencode
+        timeout-minutes: 20
+        run: |
+          find test \( -name '*.test.ts' -o -name '*.test.tsx' \) ! -name 'run-process*.test.ts' -print0 \
+            | xargs -0 bun test --timeout 60000
+          bun test --timeout 60000 --max-concurrency=1 test/cli/run/run-process-limit.test.ts
+          bun test --timeout 60000 --max-concurrency=1 test/cli/run/run-process.test.ts \
+            --test-name-pattern='exits 0 and writes|prints each|prints reasoning|unknown stream|format json|rejects requested|attach mode|SIGINT'
+        env:
+          GITHUB_ACTIONS: "false"
