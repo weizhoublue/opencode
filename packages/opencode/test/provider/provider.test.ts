@@ -84,7 +84,7 @@ const paid = (providers: Record<string, { models: Record<string, { cost: { input
 
 const languageBaseURL = (language: unknown) => (language as { config: { baseURL: string } }).config.baseURL
 
-const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node, Plugin.node])))
+const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node, Plugin.node, Auth.node])))
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
 
 const alphaProviderConfig = {
@@ -1935,4 +1935,22 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
     expect(none).toBe(0)
     expect(keyedCount).toBeGreaterThan(0)
   }).pipe(provideMultiInstance),
+)
+
+it.instance("env var takes precedence over stored API key", () =>
+  Effect.gen(function* () {
+    const auth = yield* Auth.Service
+    yield* auth.set("anthropic", { type: "api", key: "stored-key" })
+    yield* Effect.addFinalizer(() => auth.remove("anthropic").pipe(Effect.orDie))
+
+    // Set an env var key — this should win
+    yield* set("ANTHROPIC_API_KEY", "env-key")
+
+    const providers = yield* list
+    const anthropic = providers[ProviderV2.ID.anthropic]
+    expect(anthropic).toBeDefined()
+    // The loaded key should be the env var, not the stored key
+    expect(anthropic.key).toBe("env-key")
+    expect(anthropic.source).toBe("env")
+  }),
 )
