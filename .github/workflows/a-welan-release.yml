@@ -1,4 +1,4 @@
-name: welan release
+name: a welan release
 
 # Fork patch author: only contiguous commits at the tip of origin/welan authored by this
 # name are cherry-picked onto the upstream release tag.
@@ -195,6 +195,11 @@ jobs:
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
 
+      - name: Run env key priority tests
+        working-directory: packages/opencode
+        timeout-minutes: 5
+        run: bun test --timeout 60000 test/provider/provider-env-key-priority.test.ts
+
       - name: Build CLI binaries
         run: OPENCODE_VERSION="$BUILD_VERSION" ./packages/opencode/script/build.ts
 
@@ -224,16 +229,10 @@ jobs:
           tag="$RELEASE_TAG"
           target="$(git rev-parse HEAD)"
 
-          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release delete "$tag" --repo "${{ github.repository }}" --yes
-          fi
-
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            git push origin ":refs/tags/$tag"
-          fi
+          gh release delete "$tag" --repo "${{ github.repository }}" --yes 2>/dev/null || true
 
           git tag -f "$tag" "$target"
-          git push origin "refs/tags/$tag"
+          git push origin "refs/tags/$tag" --force
 
           gh release create "$tag" \
             /tmp/welan-release-assets/opencode-darwin-arm64 \
