@@ -53,12 +53,26 @@ export function isQuotaOrRateLimitPayload(value: unknown): boolean {
   return false
 }
 
+type SerializedSessionAPIError = {
+  name: "APIError"
+  data: Record<string, unknown>
+}
+
+function isSerializedSessionAPIError(error: unknown): error is SerializedSessionAPIError {
+  return isRecord(error) && error.name === "APIError" && isRecord(error.data)
+}
+
 export function isQuotaOrRateLimitAPIError(error: unknown): boolean {
-  if (!isRecord(error) || error.name !== "APIError" || !isRecord(error.data)) return false
+  if (!isSerializedSessionAPIError(error)) return false
   if (error.data.statusCode !== 429) return false
   const body = text(error.data.responseBody)
   if (isQuotaOrRateLimitPayload(parseJSON(body))) return true
   return /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i.test(body)
+}
+
+export function isInvalidKeyAPIError(error: unknown): boolean {
+  if (!isSerializedSessionAPIError(error)) return false
+  return error.data.statusCode === 401
 }
 
 export function isQuotaOrRateLimitRetryStatus(status: unknown): boolean {
@@ -110,6 +124,32 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
 export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+
+  if (process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true" && process.env.OPENCODE_THROTTLE_ENABLE !== "false") {
+    const isQuota =
+      isQuotaOrRateLimitAPIError(error) ||
+      (() => {
+        const msg = isRecord(error.data) ? error.data.message : undefined
+        if (typeof msg === "string") {
+          const lower = msg.toLowerCase()
+          return (
+            lower.includes("rate increased too quickly") ||
+            lower.includes("rate limit") ||
+            lower.includes("too many requests")
+          )
+        }
+        const json = parseJSON(msg)
+        if (json && typeof json === "object") {
+          const code = typeof json.code === "string" ? json.code : ""
+          if (json.type === "error" && json.error?.type === "too_many_requests") return true
+          if (code.includes("exhausted") || code.includes("unavailable")) return true
+          if (json.type === "error" && typeof json.error?.code === "string" && json.error.code.includes("rate_limit"))
+            return true
+        }
+        return false
+      })()
+    if (isQuota) return undefined
+  }
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
