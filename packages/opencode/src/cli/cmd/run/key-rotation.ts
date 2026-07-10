@@ -1,4 +1,4 @@
-import { isKeyRotationRetry } from "@/provider/key-rotation-retry"
+import { isKeyRotationRetry, type KeyRotationRetry } from "@/provider/key-rotation-retry"
 import { KeyRotator, parseKeys } from "@/provider/key-rotator"
 import { RotationLogger } from "@/provider/rotation-logger"
 
@@ -6,6 +6,7 @@ type KeyRotationOptions<T> = {
   createSdk: () => T
   execute: (sdk: T) => Promise<void>
   reset: () => Promise<void>
+  onExhausted: (error?: KeyRotationRetry) => void
 }
 
 export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Promise<void> {
@@ -19,10 +20,12 @@ export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Pro
   RotationLogger.log("info", `key-rotation: start, ${keys.length} key(s) configured`)
 
   let attempt = 0
+  let lastError: KeyRotationRetry | undefined
   while (true) {
     const key = await rotator.selectKey()
     if (!key) {
       RotationLogger.log("error", "key-rotation: all OPENCODE_API_KEY keys exhausted or throttled")
+      options.onExhausted(lastError)
       process.exitCode = 1
       return
     }
@@ -39,6 +42,7 @@ export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Pro
         await options.execute(options.createSdk())
       } catch (error) {
         if (!isKeyRotationRetry(error)) throw error
+        lastError = error
         if (error.reason === "quota_limit") {
           await rotator.recordThrottle(key)
           RotationLogger.log(
@@ -46,6 +50,7 @@ export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Pro
             `key-rotation: key ***${key.slice(-6)} quota_limit, ${rotator.hasAlternative(key) ? "trying next" : "no more keys"}`,
           )
           if (!rotator.hasAlternative(key)) {
+            options.onExhausted(error)
             process.exitCode = 1
             return
           }
@@ -58,6 +63,7 @@ export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Pro
           `key-rotation: key ***${key.slice(-6)} invalid, ${rotator.hasAlternative(key) ? "trying next" : "no more keys"}`,
         )
         if (!rotator.hasAlternative(key)) {
+          options.onExhausted(error)
           process.exitCode = 1
           return
         }

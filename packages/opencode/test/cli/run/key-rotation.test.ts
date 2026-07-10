@@ -34,8 +34,28 @@ test("runs the next key after an invalid-key rotation signal", async () => {
     reset: async () => {
       resets++
     },
+    onExhausted: () => {},
   })
 
   expect(attempted).toEqual(["key1", "key2"])
   expect(resets).toBe(1)
+})
+
+test("reports the final invalid-key signal", async () => {
+  process.env.OPENCODE_API_KEY = "key1,key2"
+  process.env.OPENCODE_WELAN_LOG = "false"
+  let exhausted: ReturnType<typeof keyRotationRetry> | undefined
+
+  await runWithKeyRotation({
+    createSdk: () => undefined,
+    execute: async () => {
+      throw keyRotationRetry("invalid_key", "key2 is invalid")
+    },
+    reset: async () => {},
+    onExhausted: (error) => {
+      exhausted = error
+    },
+  })
+
+  expect(exhausted).toMatchObject({ reason: "invalid_key", message: "key2 is invalid" })
 })

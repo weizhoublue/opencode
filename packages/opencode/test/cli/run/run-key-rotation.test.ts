@@ -75,6 +75,7 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
           expect(result.exitCode).toBe(0)
           expect(result.stderr).not.toContain("KeyRotationRetry")
           expect(result.stderr).not.toContain("/$bunfs/")
+          expect(result.stderr).not.toContain("OPENCODE_QUOTA_LIMIT")
           expect(result.stderr).toMatch(/level=ERROR.*key-rotation: key .* quota_limit/)
 
           const keyHash = yield* Effect.promise(() => hashKey("key1"))
@@ -158,8 +159,35 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
         })
         expect(result.exitCode).not.toBe(0)
         expect(result.durationMs).toBeLessThan(10_000)
+        expect(result.stderr).toContain(
+          "OPENCODE_QUOTA_LIMIT: all configured API keys are exhausted or throttled",
+        )
       }),
     30_000,
+  )
+
+  cliIt.live(
+    "prints one quota marker when every key returns a quota limit",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* llm.errorForKey("key1", 429, {
+          type: "error",
+          error: { type: "RateLimitError", message: "key1 quota reached" },
+        })
+        yield* llm.errorForKey("key2", 429, {
+          type: "error",
+          error: { type: "RateLimitError", message: "key2 quota reached" },
+        })
+
+        const result = yield* opencode.run("say hi", {
+          env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true" },
+          timeoutMs: 40_000,
+        })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT: key2 quota reached")
+        expect(result.stderr.match(/OPENCODE_QUOTA_LIMIT/g)).toHaveLength(1)
+      }),
+    60_000,
   )
 
   cliIt.live(

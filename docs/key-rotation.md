@@ -57,6 +57,16 @@ Key 在日志中脱敏，只显示最后 6 位。第二列（如 `[012300000Z]`�
 timestamp=2026-07-10T09:23:05.000Z level=ERROR run=abcd1234 message="key-rotation: key ***key-1 quota_limit, trying next"
 ```
 
+### CLI 错误输出
+
+单 key 命中已识别的 quota/rate-limit 时，CLI 在 stderr 输出：
+
+```text
+Error: OPENCODE_QUOTA_LIMIT: <provider 或 retry 消息>
+```
+
+多 key 轮转中，某个 key 命中 quota 而后续 key 成功时，CLI 不输出该中间错误。所有 key 最终耗尽时，CLI 只输出一次 `OPENCODE_QUOTA_LIMIT` 前缀；若最后一次请求有 provider 消息则保留该消息，否则输出 `all configured API keys are exhausted or throttled`。最后终态是无效 key 时，输出 `OPENCODE_INVALID_API_KEY: <message>`。
+
 ---
 
 ## 内部实现
@@ -72,7 +82,7 @@ packages/opencode/src/
 ├── session/
 │   └── retry.ts            # isInvalidKeyAPIError（401 检测）
 └── cli/cmd/
-    └── run.ts              # runWithKeyRotation 轮转主循环
+    └── run/key-rotation.ts # runWithKeyRotation 轮转主循环
 ```
 
 这三个新模块没有任何 Effect / Provider / Session 依赖，可以单独使用。
@@ -83,7 +93,7 @@ packages/opencode/src/
 opencode run "prompt"
        │
        ▼
-runWithKeyRotation(createSdk)
+runWithKeyRotation({ createSdk, execute, reset, onExhausted })
   │
   ├─ KeyRotator.selectKey()
   │     ├─ 读 throttle.json（无锁）
@@ -95,7 +105,7 @@ runWithKeyRotation(createSdk)
   ├─ Server.Default.reset()          ← 仅在第 2 次以后调用
   │    └─ 清除目录级 InstanceState 与惰性 Server，下次 fetch 读新 key
   │
-  ├─ execute(sdk, overrideSessionID) ← 透传上一次的 sessionID
+  ├─ execute(sdk)
   │     └─ 遇到可轮换错误时抛出 KeyRotationRetry
   │
   ├─ quota_limit  → KeyRotator.recordThrottle(key) → 写 throttle.json → 换 key

@@ -36,19 +36,23 @@ function keyRotationActive() {
   return process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true"
 }
 
-function throwKeyRotation(error: unknown) {
-  if (SessionRetry.isKeyRotationQuotaError(error)) throw keyRotationRetry("quota_limit")
-  if (SessionRetry.isInvalidKeyAPIError(error)) throw keyRotationRetry("invalid_key")
+function quotaError(message: string) {
+  return `OPENCODE_QUOTA_LIMIT: ${message}`
 }
 
-function noteRotationFromError(error: unknown, pendingRotation: { current?: KeyRotationRetry }) {
+function throwKeyRotation(error: unknown, message: string) {
+  if (SessionRetry.isKeyRotationQuotaError(error)) throw keyRotationRetry("quota_limit", message)
+  if (SessionRetry.isInvalidKeyAPIError(error)) throw keyRotationRetry("invalid_key", message)
+}
+
+function noteRotationFromError(error: unknown, pendingRotation: { current?: KeyRotationRetry }, message: string) {
   if (!keyRotationActive()) return false
   if (SessionRetry.isKeyRotationQuotaError(error)) {
-    pendingRotation.current = keyRotationRetry("quota_limit")
+    pendingRotation.current = keyRotationRetry("quota_limit", message)
     return true
   }
   if (SessionRetry.isInvalidKeyAPIError(error)) {
-    pendingRotation.current = keyRotationRetry("invalid_key")
+    pendingRotation.current = keyRotationRetry("invalid_key", message)
     return true
   }
   return false
@@ -809,12 +813,13 @@ export const RunCommand = effectCmd({
               }
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
-              if (noteRotationFromError(props.error, pendingRotation)) break
+              const quota = SessionRetry.isKeyRotationQuotaError(props.error)
+              if (noteRotationFromError(props.error, pendingRotation, err)) break
               if (emit("error", { error: props.error })) {
                 if (limit) return error
                 continue
               }
-              UI.error(err)
+              UI.error(quota ? quotaError(err) : err)
               if (limit) return error
             }
 
@@ -827,7 +832,7 @@ export const RunCommand = effectCmd({
                   break
                 }
                 if (emit("error", { error: status })) return error
-                UI.error(status.message)
+                UI.error(quotaError(status.message))
                 return error
               }
               if (status.type === "idle") {
@@ -890,8 +895,11 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
-              if (keyRotationActive()) throwKeyRotation(result.error)
-              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
+              const message = formatRunError(result.error)
+              if (keyRotationActive()) throwKeyRotation(result.error, message)
+              if (!emit("error", { error: result.error })) {
+                UI.error(SessionRetry.isKeyRotationQuotaError(result.error) ? quotaError(message) : message)
+              }
               process.exitCode = 1
               return
             }
@@ -908,8 +916,11 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
-            if (keyRotationActive()) throwKeyRotation(result.error)
-            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
+            const message = formatRunError(result.error)
+            if (keyRotationActive()) throwKeyRotation(result.error, message)
+            if (!emit("error", { error: result.error })) {
+              UI.error(SessionRetry.isKeyRotationQuotaError(result.error) ? quotaError(message) : message)
+            }
             process.exitCode = 1
             return
           }
@@ -1001,6 +1012,15 @@ export const RunCommand = effectCmd({
         reset: async () => {
           await disposeInstance(directory ?? root)
           Server.Default.reset()
+        },
+        onExhausted: (error) => {
+          if (error?.reason === "invalid_key") {
+            UI.error(`OPENCODE_INVALID_API_KEY: ${error.message ?? "all configured API keys are invalid"}`)
+            return
+          }
+          UI.error(
+            quotaError(error?.message ?? "all configured API keys are exhausted or throttled"),
+          )
         },
       })
     })
