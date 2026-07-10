@@ -16,7 +16,7 @@ afterEach(() => {
   else process.env.OPENCODE_KEY_ROTATION_ACTIVE = env.rotationActive
   if (env.welanLog === undefined) delete process.env.OPENCODE_WELAN_LOG
   else process.env.OPENCODE_WELAN_LOG = env.welanLog
-  process.exitCode = env.exitCode
+  process.exitCode = env.exitCode ?? 0
 })
 
 test("runs the next key after an invalid-key rotation signal", async () => {
