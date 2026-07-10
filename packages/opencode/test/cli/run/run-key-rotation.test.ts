@@ -6,6 +6,8 @@ import fs from "fs/promises"
 import { Effect } from "effect"
 import { cliIt } from "../../lib/cli-process"
 
+const zenLimitErrorTypes = ["RateLimitError", "FreeUsageLimitError", "GoUsageLimitError", "BlackUsageLimitError"]
+
 async function hashKey(key: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
@@ -57,35 +59,35 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
     45_000,
   )
 
-  cliIt.live(
-    "falls back to key2 and writes throttle.json when key1 returns 429",
-    ({ llm, opencode, home }) =>
-      Effect.gen(function* () {
-        const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
-        // key1: 429, key2: success
-        yield* llm.errorForKey("key1", 429, { type: "error", error: { type: "RateLimitError", message: "Rate limit" } })
-        yield* llm.success("hello from key2")
+  for (const type of zenLimitErrorTypes) {
+    cliIt.live(
+      `falls back to key2 and writes throttle.json when key1 returns ${type}`,
+      ({ llm, opencode, home }) =>
+        Effect.gen(function* () {
+          const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
+          yield* llm.errorForKey("key1", 429, { type: "error", error: { type, message: "Usage limit reached" } })
+          yield* llm.success("hello from key2")
 
-        const result = yield* opencode.run("say hi", {
-          env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true" },
-          timeoutMs: 40_000,
-        })
-        expect(result.exitCode).toBe(0)
-        expect(result.stderr).not.toContain("KeyRotationRetry")
-        expect(result.stderr).not.toContain("/$bunfs/")
+          const result = yield* opencode.run("say hi", {
+            env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true" },
+            timeoutMs: 40_000,
+          })
+          expect(result.exitCode).toBe(0)
+          expect(result.stderr).not.toContain("KeyRotationRetry")
+          expect(result.stderr).not.toContain("/$bunfs/")
 
-        // throttle.json should now have key1
-        const keyHash = yield* Effect.promise(() => hashKey("key1"))
-        const data = JSON.parse(yield* Effect.promise(() => fs.readFile(throttleFile, "utf8")))
-        expect(
-          data.some(
-            (r: { key_hash: string; source: string }) => r.key_hash === keyHash && r.source === "OPENCODE_API_KEY",
-          ),
-        ).toBe(true)
-        expect(JSON.stringify(data)).not.toContain("\"key\"")
-      }),
-    60_000,
-  )
+          const keyHash = yield* Effect.promise(() => hashKey("key1"))
+          const data = JSON.parse(yield* Effect.promise(() => fs.readFile(throttleFile, "utf8")))
+          expect(
+            data.some(
+              (r: { key_hash: string; source: string }) => r.key_hash === keyHash && r.source === "OPENCODE_API_KEY",
+            ),
+          ).toBe(true)
+          expect(JSON.stringify(data)).not.toContain("\"key\"")
+        }),
+      60_000,
+    )
+  }
 
   cliIt.live(
     "falls back to key2 when key1 returns 401",
