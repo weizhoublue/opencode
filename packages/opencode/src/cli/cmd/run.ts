@@ -25,9 +25,34 @@ import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { runWithKeyRotation } from "./run/key-rotation"
 import { SessionRetry } from "@/session/retry"
+import { isKeyRotationRetry, keyRotationRetry, type KeyRotationRetry } from "@/provider/key-rotation-retry"
+import { disposeInstance } from "@/effect/instance-registry"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
+
+function keyRotationActive() {
+  return process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true"
+}
+
+function throwKeyRotation(error: unknown) {
+  if (SessionRetry.isKeyRotationQuotaError(error)) throw keyRotationRetry("quota_limit")
+  if (SessionRetry.isInvalidKeyAPIError(error)) throw keyRotationRetry("invalid_key")
+}
+
+function noteRotationFromError(error: unknown, pendingRotation: { current?: KeyRotationRetry }) {
+  if (!keyRotationActive()) return false
+  if (SessionRetry.isKeyRotationQuotaError(error)) {
+    pendingRotation.current = keyRotationRetry("quota_limit")
+    return true
+  }
+  if (SessionRetry.isInvalidKeyAPIError(error)) {
+    pendingRotation.current = keyRotationRetry("invalid_key")
+    return true
+  }
+  return false
+}
 
 function pick(value: string | undefined): ModelInput | undefined {
   if (!value) return undefined
@@ -669,6 +694,7 @@ export const RunCommand = effectCmd({
       }
 
       async function execute(sdk: OpencodeClient) {
+        const pendingRotation: { current?: KeyRotationRetry } = {}
         const sess = await session(sdk)
         if (!sess?.id) {
           UI.error("Session not found")
@@ -783,6 +809,7 @@ export const RunCommand = effectCmd({
               }
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
+              if (noteRotationFromError(props.error, pendingRotation)) break
               if (emit("error", { error: props.error })) {
                 if (limit) return error
                 continue
@@ -795,6 +822,10 @@ export const RunCommand = effectCmd({
               const status = event.properties.status
               if (status.type === "retry" && SessionRetry.isQuotaOrRateLimitRetryStatus(status)) {
                 error = error ? error + EOL + status.message : status.message
+                if (keyRotationActive()) {
+                  pendingRotation.current = keyRotationRetry("quota_limit")
+                  break
+                }
                 if (emit("error", { error: status })) return error
                 UI.error(status.message)
                 return error
@@ -845,6 +876,7 @@ export const RunCommand = effectCmd({
           async function finish() {
             if (args.attach) return
             const error = await completed
+            if (pendingRotation.current) throw pendingRotation.current
             if (error) process.exitCode = 1
           }
 
@@ -858,6 +890,7 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
+              if (keyRotationActive()) throwKeyRotation(result.error)
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
               return
@@ -875,6 +908,7 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
+            if (keyRotationActive()) throwKeyRotation(result.error)
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
             return
@@ -907,7 +941,6 @@ export const RunCommand = effectCmd({
         } catch (error) {
           dieInteractive(error)
         }
-        return
       }
 
       if (interactive && !args.attach && !args.session && !args.continue) {
@@ -959,12 +992,17 @@ export const RunCommand = effectCmd({
         if (auth) headers.set("Authorization", auth)
         return Server.Default().app.fetch(new Request(request, { headers }))
       }) as typeof globalThis.fetch
-      const sdk = createOpencodeClient({
-        baseUrl: "http://opencode.internal",
-        fetch: fetchFn,
-        directory,
+
+      const createSdk = () => createOpencodeClient({ baseUrl: "http://opencode.internal", fetch: fetchFn, directory })
+      const { Server } = await import("@/server/server")
+      await runWithKeyRotation({
+        createSdk,
+        execute,
+        reset: async () => {
+          await disposeInstance(directory ?? root)
+          Server.Default.reset()
+        },
       })
-      await execute(sdk)
     })
   }),
 })
