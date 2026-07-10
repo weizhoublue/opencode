@@ -165,6 +165,62 @@ describe("session.retry quota limits", () => {
     expect(SessionRetry.isQuotaOrRateLimitAPIError(transient)).toBe(false)
   })
 
+  test("isKeyRotationQuotaError recognizes structured messages and verified text fallbacks", () => {
+    expect(
+      SessionRetry.isKeyRotationQuotaError(
+        wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } })),
+      ),
+    ).toBe(true)
+    expect(SessionRetry.isKeyRotationQuotaError(wrap("Request rate increased too quickly"))).toBe(true)
+    expect(SessionRetry.isKeyRotationQuotaError(wrap("service unavailable"))).toBe(false)
+  })
+
+  test("isInvalidKeyAPIError matches serialized 401 APIError", () => {
+    const invalid = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Unauthorized",
+        isRetryable: false,
+        statusCode: 401,
+        responseBody: JSON.stringify({ error: "Unauthorized" }),
+      }).toObject(),
+    )
+    expect(SessionRetry.isInvalidKeyAPIError(invalid)).toBe(true)
+  })
+
+  test("isInvalidKeyAPIError matches APIError produced from 401 APICallError", () => {
+    const apicall = new APICallError({
+      message: "Unauthorized",
+      url: "https://api.example.com/v1/chat/completions",
+      requestBodyValues: {},
+      statusCode: 401,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: JSON.stringify({ error: "Unauthorized" }),
+      isRetryable: false,
+    })
+    const normalized = MessageV2.fromError(apicall, { providerID })
+    expect(SessionRetry.isInvalidKeyAPIError(normalized)).toBe(true)
+  })
+
+  test("isInvalidKeyAPIError ignores non-auth API errors", () => {
+    const rateLimit = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Rate limit exceeded",
+        isRetryable: true,
+        statusCode: 429,
+      }).toObject(),
+    )
+    expect(SessionRetry.isInvalidKeyAPIError(rateLimit)).toBe(false)
+
+    const badRequest = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Bad request",
+        isRetryable: false,
+        statusCode: 400,
+      }).toObject(),
+    )
+    expect(SessionRetry.isInvalidKeyAPIError(badRequest)).toBe(false)
+  })
+
   test("isQuotaOrRateLimitRetryStatus prefers action reasons over message text", () => {
     expect(
       SessionRetry.isQuotaOrRateLimitRetryStatus({
