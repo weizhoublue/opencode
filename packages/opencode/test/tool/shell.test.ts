@@ -1112,7 +1112,8 @@ describe("tool.shell abort", () => {
         const updates: string[] = []
         const result = yield* run(
           {
-            command: `echo first && sleep 0.1 && echo second`,
+            // Line-buffered stdout; sleep between prints so metadata sees multiple chunks.
+            command: `bun -e 'console.log("first"); await Bun.sleep(200); console.log("second")'`,
           },
           {
             ...ctx,

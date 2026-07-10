@@ -27,7 +27,7 @@ import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { SessionRetry } from "@/session/retry"
 import { KeyRotator, parseKeys } from "@/provider/key-rotator"
-import { KeyRotationRetry } from "@/provider/key-rotation-retry"
+import { isKeyRotationRetry, keyRotationRetry } from "@/provider/key-rotation-retry"
 import { RotationLogger } from "@/provider/rotation-logger"
 import { disposeInstance } from "@/effect/instance-registry"
 
@@ -37,9 +37,13 @@ function keyRotationActive() {
   return process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true"
 }
 
+function rotatableKeyRotationError(error: unknown) {
+  return SessionRetry.isQuotaOrRateLimitAPIError(error) || SessionRetry.isInvalidKeyAPIError(error)
+}
+
 function throwKeyRotation(error: unknown) {
-  if (SessionRetry.isQuotaOrRateLimitAPIError(error)) throw new KeyRotationRetry("quota_limit")
-  if (SessionRetry.isInvalidKeyAPIError(error)) throw new KeyRotationRetry("invalid_key")
+  if (SessionRetry.isQuotaOrRateLimitAPIError(error)) throw keyRotationRetry("quota_limit")
+  if (SessionRetry.isInvalidKeyAPIError(error)) throw keyRotationRetry("invalid_key")
 }
 
 function pick(value: string | undefined): ModelInput | undefined {
@@ -796,13 +800,14 @@ export const RunCommand = effectCmd({
               }
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
+              const rotate = keyRotationActive() && rotatableKeyRotationError(props.error)
               if (emit("error", { error: props.error })) {
-                if (keyRotationActive()) throwKeyRotation(props.error)
+                if (rotate) throwKeyRotation(props.error)
                 if (limit) return error
                 continue
               }
-              UI.error(err)
-              if (keyRotationActive()) throwKeyRotation(props.error)
+              if (!rotate) UI.error(err)
+              if (rotate) throwKeyRotation(props.error)
               if (limit) return error
             }
 
@@ -811,8 +816,7 @@ export const RunCommand = effectCmd({
               if (status.type === "retry" && SessionRetry.isQuotaOrRateLimitRetryStatus(status)) {
                 error = error ? error + EOL + status.message : status.message
                 if (keyRotationActive()) {
-                  if (!emit("error", { error: status })) UI.error(status.message)
-                  throw new KeyRotationRetry("quota_limit")
+                  throw keyRotationRetry("quota_limit")
                 }
                 if (emit("error", { error: status })) return error
                 UI.error(status.message)
@@ -857,15 +861,17 @@ export const RunCommand = effectCmd({
 
         if (!interactive) {
           const events = await client.event.subscribe()
-          const completed = loop(client, events).catch((e) => {
-            if (e instanceof KeyRotationRetry) throw e
-            console.error(e)
-            process.exitCode = 1
-          })
+          const completed = loop(client, events)
           async function finish() {
             if (args.attach) return
-            const error = await completed
-            if (error) process.exitCode = 1
+            try {
+              const error = await completed
+              if (error) process.exitCode = 1
+            } catch (e) {
+              if (isKeyRotationRetry(e)) throw e
+              console.error(e)
+              process.exitCode = 1
+            }
           }
 
           if (args.command) {
@@ -878,8 +884,8 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
+              if (keyRotationActive() && rotatableKeyRotationError(result.error)) throwKeyRotation(result.error)
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-              if (keyRotationActive()) throwKeyRotation(result.error)
               process.exitCode = 1
               return
             }
@@ -896,8 +902,8 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
+            if (keyRotationActive() && rotatableKeyRotationError(result.error)) throwKeyRotation(result.error)
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-            if (keyRotationActive()) throwKeyRotation(result.error)
             process.exitCode = 1
             return
           }
@@ -965,7 +971,7 @@ export const RunCommand = effectCmd({
             try {
               await execute(createSdk())
             } catch (error) {
-              if (!(error instanceof KeyRotationRetry)) throw error
+              if (!isKeyRotationRetry(error)) throw error
               if (error.reason === "quota_limit") {
                 await rotator.recordThrottle(key)
                 RotationLogger.log(

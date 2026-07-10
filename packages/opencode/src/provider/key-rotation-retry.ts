@@ -1,9 +1,16 @@
 export type RotateReason = "quota_limit" | "invalid_key"
 
-export class KeyRotationRetry extends Error {
-  override readonly name = "KeyRotationRetry"
+const TAG = Symbol.for("opencode.KeyRotationRetry")
 
-  constructor(readonly reason: RotateReason) {
-    super(`key rotation: ${reason}`)
-  }
+export type KeyRotationRetry = {
+  readonly [TAG]: true
+  readonly reason: RotateReason
+}
+
+export function keyRotationRetry(reason: RotateReason): KeyRotationRetry {
+  return { [TAG]: true, reason }
+}
+
+export function isKeyRotationRetry(value: unknown): value is KeyRotationRetry {
+  return typeof value === "object" && value !== null && TAG in value
 }
