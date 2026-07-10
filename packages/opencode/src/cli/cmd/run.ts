@@ -26,8 +26,34 @@ import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@openc
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { SessionRetry } from "@/session/retry"
+import { KeyRotator, parseKeys } from "@/provider/key-rotator"
+import { isKeyRotationRetry, keyRotationRetry, type KeyRotationRetry } from "@/provider/key-rotation-retry"
+import { RotationLogger } from "@/provider/rotation-logger"
+import { disposeInstance } from "@/effect/instance-registry"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
+
+function keyRotationActive() {
+  return process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true"
+}
+
+function throwKeyRotation(error: unknown) {
+  if (SessionRetry.isQuotaOrRateLimitAPIError(error)) throw keyRotationRetry("quota_limit")
+  if (SessionRetry.isInvalidKeyAPIError(error)) throw keyRotationRetry("invalid_key")
+}
+
+function noteRotationFromError(error: unknown, pendingRotation: { current?: KeyRotationRetry }) {
+  if (!keyRotationActive()) return false
+  if (SessionRetry.isQuotaOrRateLimitAPIError(error)) {
+    pendingRotation.current = keyRotationRetry("quota_limit")
+    return true
+  }
+  if (SessionRetry.isInvalidKeyAPIError(error)) {
+    pendingRotation.current = keyRotationRetry("invalid_key")
+    return true
+  }
+  return false
+}
 
 function pick(value: string | undefined): ModelInput | undefined {
   if (!value) return undefined
@@ -669,6 +695,7 @@ export const RunCommand = effectCmd({
       }
 
       async function execute(sdk: OpencodeClient) {
+        const pendingRotation: { current?: KeyRotationRetry } = {}
         const sess = await session(sdk)
         if (!sess?.id) {
           UI.error("Session not found")
@@ -783,6 +810,7 @@ export const RunCommand = effectCmd({
               }
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
+              if (noteRotationFromError(props.error, pendingRotation)) break
               if (emit("error", { error: props.error })) {
                 if (limit) return error
                 continue
@@ -795,6 +823,10 @@ export const RunCommand = effectCmd({
               const status = event.properties.status
               if (status.type === "retry" && SessionRetry.isQuotaOrRateLimitRetryStatus(status)) {
                 error = error ? error + EOL + status.message : status.message
+                if (keyRotationActive()) {
+                  pendingRotation.current = keyRotationRetry("quota_limit")
+                  break
+                }
                 if (emit("error", { error: status })) return error
                 UI.error(status.message)
                 return error
@@ -845,6 +877,7 @@ export const RunCommand = effectCmd({
           async function finish() {
             if (args.attach) return
             const error = await completed
+            if (pendingRotation.current) throw pendingRotation.current
             if (error) process.exitCode = 1
           }
 
@@ -858,6 +891,7 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
+              if (keyRotationActive()) throwKeyRotation(result.error)
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
               return
@@ -875,6 +909,7 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
+            if (keyRotationActive()) throwKeyRotation(result.error)
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
             return
@@ -907,7 +942,76 @@ export const RunCommand = effectCmd({
         } catch (error) {
           dieInteractive(error)
         }
-        return
+      }
+
+      async function runWithKeyRotation(createSdk: () => OpencodeClient): Promise<void> {
+        const { Server } = await import("@/server/server")
+        const keys = parseKeys()
+        if (keys.length <= 1) {
+          await execute(createSdk())
+          return
+        }
+        const rotator = new KeyRotator(keys)
+
+        RotationLogger.log("info", `key-rotation: start, ${keys.length} key(s) configured`)
+
+        let attempt = 0
+        while (true) {
+          const key = await rotator.selectKey()
+          if (!key) {
+            RotationLogger.log("error", "key-rotation: all OPENCODE_API_KEY keys exhausted or throttled")
+            process.exitCode = 1
+            return
+          }
+
+          attempt++
+          process.env.OPENCODE_API_KEY = key
+          if (attempt > 1) {
+            await disposeInstance(directory ?? root)
+            Server.Default.reset()
+          }
+          RotationLogger.log("info", `key-rotation: attempt ${attempt} with key ***${key.slice(-6)}`)
+
+          const previousRotationActive = process.env.OPENCODE_KEY_ROTATION_ACTIVE
+          process.env.OPENCODE_KEY_ROTATION_ACTIVE = "true"
+          try {
+            try {
+              await execute(createSdk())
+            } catch (error) {
+              if (!isKeyRotationRetry(error)) throw error
+              if (error.reason === "quota_limit") {
+                await rotator.recordThrottle(key)
+                RotationLogger.log(
+                  "warn",
+                  `key-rotation: key ***${key.slice(-6)} quota_limit, ${rotator.hasAlternative(key) ? "trying next" : "no more keys"}`,
+                )
+                if (!rotator.hasAlternative(key)) {
+                  process.exitCode = 1
+                  return
+                }
+                process.exitCode = 0
+                continue
+              }
+              rotator.markInvalid(key)
+              RotationLogger.log(
+                "warn",
+                `key-rotation: key ***${key.slice(-6)} invalid, ${rotator.hasAlternative(key) ? "trying next" : "no more keys"}`,
+              )
+              if (!rotator.hasAlternative(key)) {
+                process.exitCode = 1
+                return
+              }
+              process.exitCode = 0
+              continue
+            }
+            if (process.exitCode) return
+            RotationLogger.log("info", `key-rotation: success with key ***${key.slice(-6)}`)
+            return
+          } finally {
+            if (previousRotationActive === undefined) delete process.env.OPENCODE_KEY_ROTATION_ACTIVE
+            else process.env.OPENCODE_KEY_ROTATION_ACTIVE = previousRotationActive
+          }
+        }
       }
 
       if (interactive && !args.attach && !args.session && !args.continue) {
@@ -959,12 +1063,10 @@ export const RunCommand = effectCmd({
         if (auth) headers.set("Authorization", auth)
         return Server.Default().app.fetch(new Request(request, { headers }))
       }) as typeof globalThis.fetch
-      const sdk = createOpencodeClient({
-        baseUrl: "http://opencode.internal",
-        fetch: fetchFn,
-        directory,
-      })
-      await execute(sdk)
+
+      const createSdk = () => createOpencodeClient({ baseUrl: "http://opencode.internal", fetch: fetchFn, directory })
+
+      await runWithKeyRotation(createSdk)
     })
   }),
 })
