@@ -42,7 +42,7 @@ export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Pro
         if (error.reason === "quota_limit") {
           await rotator.recordThrottle(key)
           RotationLogger.log(
-            "warn",
+            "error",
             `key-rotation: key ***${key.slice(-6)} quota_limit, ${rotator.hasAlternative(key) ? "trying next" : "no more keys"}`,
           )
           if (!rotator.hasAlternative(key)) {
@@ -54,7 +54,7 @@ export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Pro
         }
         rotator.markInvalid(key)
         RotationLogger.log(
-          "warn",
+          "error",
           `key-rotation: key ***${key.slice(-6)} invalid, ${rotator.hasAlternative(key) ? "trying next" : "no more keys"}`,
         )
         if (!rotator.hasAlternative(key)) {

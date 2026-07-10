@@ -50,14 +50,14 @@ export class KeyRotator {
     if (!isThrottleEnabled()) return
     const duration = throttleDuration()
     RotationLogger.log(
-      "warn",
+      "error",
       `key-rotation: key ${maskKey(key)} throttled for ${duration} minutes, writing throttle record`,
     )
     await this.store.addThrottle(SOURCE, key, duration)
   }
 
   markInvalid(key: string): void {
-    RotationLogger.log("warn", `key-rotation: key ${maskKey(key)} marked invalid, skipping for this process`)
+    RotationLogger.log("error", `key-rotation: key ${maskKey(key)} marked invalid, skipping for this process`)
     this.invalid.add(key)
   }
 

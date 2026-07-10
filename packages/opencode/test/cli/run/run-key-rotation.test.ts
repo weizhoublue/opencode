@@ -69,12 +69,13 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
           yield* llm.success("hello from key2")
 
           const result = yield* opencode.run("say hi", {
-            env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true" },
+            env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true", OPENCODE_PRINT_LOGS: "1" },
             timeoutMs: 40_000,
           })
           expect(result.exitCode).toBe(0)
           expect(result.stderr).not.toContain("KeyRotationRetry")
           expect(result.stderr).not.toContain("/$bunfs/")
+          expect(result.stderr).toMatch(/level=ERROR.*key-rotation: key .* quota_limit/)
 
           const keyHash = yield* Effect.promise(() => hashKey("key1"))
           const data = JSON.parse(yield* Effect.promise(() => fs.readFile(throttleFile, "utf8")))
@@ -98,13 +99,14 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
         yield* llm.success("hello")
 
         const result = yield* opencode.run("say hi", {
-          env: { OPENCODE_API_KEY: "key1,key2" },
+          env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_PRINT_LOGS: "1" },
           timeoutMs: 40_000,
         })
         expect(result.exitCode).toBe(0)
         expect(result.stderr).not.toContain("KeyRotationRetry")
         expect(result.stderr).not.toContain("Invalid API key")
         expect(result.stderr).not.toContain("/$bunfs/")
+        expect(result.stderr).toMatch(/level=ERROR.*key-rotation: key .* invalid/)
 
         // 401 does NOT write throttle.json
         const exists = yield* Effect.promise(() =>

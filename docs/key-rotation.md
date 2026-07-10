@@ -43,8 +43,8 @@ key 轮转决策会写两份日志：
 
 ```
 [012300000Z] [2026-07-10T09:23:00.000] [INFO] key-rotation: start, 2 key(s) configured
-[012300000Z] [2026-07-10T09:23:05.000] [WARN] key-rotation: key ***key-1 throttled for 120 minutes, writing throttle record
-[012300000Z] [2026-07-10T09:23:05.000] [WARN] key-rotation: key ***key-1 quota_limit, trying next
+[012300000Z] [2026-07-10T09:23:05.000] [ERROR] key-rotation: key ***key-1 throttled for 120 minutes, writing throttle record
+[012300000Z] [2026-07-10T09:23:05.000] [ERROR] key-rotation: key ***key-1 quota_limit, trying next
 [012300000Z] [2026-07-10T09:23:05.000] [INFO] key-rotation: attempt 2 with key ***key-2
 [012300000Z] [2026-07-10T09:23:10.000] [INFO] key-rotation: success with key ***key-2
 ```
@@ -54,7 +54,7 @@ Key 在日志中脱敏，只显示最后 6 位。第二列（如 `[012300000Z]`�
 `opencode.log` 示例：
 
 ```
-timestamp=2026-07-10T09:23:05.000Z level=WARN run=abcd1234 message="key-rotation: key ***key-1 quota_limit, trying next"
+timestamp=2026-07-10T09:23:05.000Z level=ERROR run=abcd1234 message="key-rotation: key ***key-1 quota_limit, trying next"
 ```
 
 ---
@@ -109,7 +109,7 @@ runWithKeyRotation(createSdk)
 
 **KeyRotationRetry** — `execute()` 保留原来的成功/失败返回语义。只有 429/quota/rate-limit 和 401 这两类可轮换错误会抛出 `KeyRotationRetry`，由外层 `runWithKeyRotation()` 捕获并换 key。
 
-**Session ID 透传** — `overrideSessionID` 在轮转后传给下一次 `execute()`，使新 key 的请求继续使用同一个 SQLite session，保留上下文。
+**Session 复用** — 显式传入 session ID 时，每次 `execute()` 都按原始 CLI 参数解析并复用同一 session。未传入 session ID 时，每次轮转沿用原有 CLI 语义创建新 session；失败 key 创建但未成功执行的 session 不会被下一次尝试继承。
 
 **锁策略** — `isThrottled`（读）不加锁，宁可偶发读到旧数据也不阻塞 API 调用。`addThrottle` / `cleanExpired`（写）使用 `Flock.acquire`，超时 2s 后放弃写入（宁漏记，不阻塞）。进程崩溃导致的僵尸锁通过 `staleMs: 10_000` 自动清理。
 
