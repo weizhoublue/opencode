@@ -796,13 +796,12 @@ export const RunCommand = effectCmd({
               }
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
+              if (keyRotationActive()) throwKeyRotation(props.error)
               if (emit("error", { error: props.error })) {
-                if (keyRotationActive()) throwKeyRotation(props.error)
                 if (limit) return error
                 continue
               }
               UI.error(err)
-              if (keyRotationActive()) throwKeyRotation(props.error)
               if (limit) return error
             }
 
@@ -811,7 +810,6 @@ export const RunCommand = effectCmd({
               if (status.type === "retry" && SessionRetry.isQuotaOrRateLimitRetryStatus(status)) {
                 error = error ? error + EOL + status.message : status.message
                 if (keyRotationActive()) {
-                  if (!emit("error", { error: status })) UI.error(status.message)
                   throw new KeyRotationRetry("quota_limit")
                 }
                 if (emit("error", { error: status })) return error
@@ -878,8 +876,8 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
-              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               if (keyRotationActive()) throwKeyRotation(result.error)
+              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
               return
             }
@@ -896,8 +894,8 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
-            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             if (keyRotationActive()) throwKeyRotation(result.error)
+            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
             return
           }

@@ -4,6 +4,7 @@ export class KeyRotationRetry extends Error {
   override readonly name = "KeyRotationRetry"
 
   constructor(readonly reason: RotateReason) {
-    super(`key rotation: ${reason}`)
+    super()
+    this.stack = undefined
   }
 }
