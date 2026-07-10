@@ -9,6 +9,11 @@ const configDir = path.join(tmpDir, "xdg", "opencode")
 const throttleFile = path.join(configDir, "throttle.json")
 const throttleStore = createThrottleStore({ configDir })
 
+async function hashKey(key: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+}
+
 beforeEach(async () => {
   await fs.mkdir(configDir, { recursive: true })
 })
@@ -26,7 +31,15 @@ describe("ThrottleStore.isThrottled", () => {
     const now = Date.now()
     await fs.writeFile(
       throttleFile,
-      JSON.stringify([{ source: "OPENCODE_API_KEY", key: "key1", startTime: now - 1000, endTime: now + 60_000 }]),
+      JSON.stringify([
+        {
+          source: "OPENCODE_API_KEY",
+          key_hint: "***key1",
+          key_hash: await hashKey("key1"),
+          startTime: now - 1000,
+          endTime: now + 60_000,
+        },
+      ]),
     )
     expect(await throttleStore.isThrottled("OPENCODE_API_KEY", "key1")).toBe(true)
   })
@@ -35,7 +48,15 @@ describe("ThrottleStore.isThrottled", () => {
     const now = Date.now()
     await fs.writeFile(
       throttleFile,
-      JSON.stringify([{ source: "OPENCODE_API_KEY", key: "key1", startTime: now - 120_000, endTime: now - 1000 }]),
+      JSON.stringify([
+        {
+          source: "OPENCODE_API_KEY",
+          key_hint: "***key1",
+          key_hash: await hashKey("key1"),
+          startTime: now - 120_000,
+          endTime: now - 1000,
+        },
+      ]),
     )
     expect(await throttleStore.isThrottled("OPENCODE_API_KEY", "key1")).toBe(false)
   })
@@ -44,7 +65,15 @@ describe("ThrottleStore.isThrottled", () => {
     const now = Date.now()
     await fs.writeFile(
       throttleFile,
-      JSON.stringify([{ source: "OPENCODE_API_KEY", key: "key1", startTime: now - 1000, endTime: now + 60_000 }]),
+      JSON.stringify([
+        {
+          source: "OPENCODE_API_KEY",
+          key_hint: "***key1",
+          key_hash: await hashKey("key1"),
+          startTime: now - 1000,
+          endTime: now + 60_000,
+        },
+      ]),
     )
     expect(await throttleStore.isThrottled("OPENCODE_API_KEY", "key2")).toBe(false)
   })
@@ -57,11 +86,15 @@ describe("ThrottleStore.isThrottled", () => {
 
 describe("ThrottleStore.addThrottle", () => {
   it("creates throttle.json with a new record", async () => {
-    await throttleStore.addThrottle("OPENCODE_API_KEY", "key1", 120)
+    const key = "secret-key-12345678"
+    await throttleStore.addThrottle("OPENCODE_API_KEY", key, 120)
     const data = JSON.parse(await fs.readFile(throttleFile, "utf8"))
     expect(data).toHaveLength(1)
     expect(data[0].source).toBe("OPENCODE_API_KEY")
-    expect(data[0].key).toBe("key1")
+    expect(data[0].key_hint).toBe("***12345678")
+    expect(data[0].key_hash).toBe(await hashKey(key))
+    expect(JSON.stringify(data)).not.toContain("\"key\"")
+    expect(JSON.stringify(data)).not.toContain(key)
     expect(data[0].endTime - data[0].startTime).toBe(120 * 60 * 1000)
   })
 
@@ -87,14 +120,26 @@ describe("ThrottleStore.cleanExpired", () => {
     await fs.writeFile(
       throttleFile,
       JSON.stringify([
-        { source: "OPENCODE_API_KEY", key: "key1", startTime: now - 120_000, endTime: now - 1000 },
-        { source: "OPENCODE_API_KEY", key: "key2", startTime: now - 1000, endTime: now + 60_000 },
+        {
+          source: "OPENCODE_API_KEY",
+          key_hint: "***key1",
+          key_hash: await hashKey("key1"),
+          startTime: now - 120_000,
+          endTime: now - 1000,
+        },
+        {
+          source: "OPENCODE_API_KEY",
+          key_hint: "***key2",
+          key_hash: await hashKey("key2"),
+          startTime: now - 1000,
+          endTime: now + 60_000,
+        },
       ]),
     )
     await throttleStore.cleanExpired("OPENCODE_API_KEY", "key1")
     const data = JSON.parse(await fs.readFile(throttleFile, "utf8"))
     expect(data).toHaveLength(1)
-    expect(data[0].key).toBe("key2")
+    expect(data[0].key_hint).toBe("***key2")
   })
 
   it("does nothing when key is not in the file", async () => {

@@ -5,13 +5,19 @@ import { Global } from "@opencode-ai/core/global"
 
 type ThrottleRecord = {
   source: string
-  key: string
+  key_hint: string
+  key_hash: string
   startTime: number
   endTime: number
 }
 
 type StoreOptions = {
   configDir: string | (() => string)
+}
+
+async function hashKey(key: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
 export function createThrottleStore(options: StoreOptions) {
@@ -37,7 +43,8 @@ export function createThrottleStore(options: StoreOptions) {
   async function isThrottled(source: string, key: string): Promise<boolean> {
     const records = await readRecords()
     const now = Date.now()
-    const record = records.find((r) => r.source === source && r.key === key)
+    const keyHash = await hashKey(key)
+    const record = records.find((r) => r.source === source && r.key_hash === keyHash)
     if (!record) return false
     if (now < record.endTime) return true
     void cleanExpired(source, key)
@@ -59,8 +66,15 @@ export function createThrottleStore(options: StoreOptions) {
       const records = await readRecords()
       const now = Date.now()
       const endTime = now + durationMinutes * 60 * 1000
-      const idx = records.findIndex((r) => r.source === source && r.key === key)
-      const record: ThrottleRecord = { source, key, startTime: now, endTime }
+      const keyHash = await hashKey(key)
+      const idx = records.findIndex((r) => r.source === source && r.key_hash === keyHash)
+      const record: ThrottleRecord = {
+        source,
+        key_hint: `***${key.slice(-8)}`,
+        key_hash: keyHash,
+        startTime: now,
+        endTime,
+      }
       if (idx >= 0) records[idx] = record
       else records.push(record)
       await writeRecords(records)
@@ -83,7 +97,8 @@ export function createThrottleStore(options: StoreOptions) {
     try {
       const records = await readRecords()
       const now = Date.now()
-      const filtered = records.filter((r) => !(r.source === source && r.key === key && now >= r.endTime))
+      const keyHash = await hashKey(key)
+      const filtered = records.filter((r) => !(r.source === source && r.key_hash === keyHash && now >= r.endTime))
       await writeRecords(filtered)
     } finally {
       await lease.release()

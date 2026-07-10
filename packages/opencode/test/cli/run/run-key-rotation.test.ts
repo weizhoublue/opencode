@@ -6,6 +6,11 @@ import fs from "fs/promises"
 import { Effect } from "effect"
 import { cliIt } from "../../lib/cli-process"
 
+async function hashKey(key: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+}
+
 beforeEach(() => {
   delete process.env.OPENCODE_API_KEY
 })
@@ -22,6 +27,7 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
         const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
         // Pre-seed throttle.json: key1 is throttled
         const now = Date.now()
+        const keyHash = yield* Effect.promise(() => hashKey("key1"))
         yield* Effect.promise(() => fs.mkdir(path.dirname(throttleFile), { recursive: true }))
         yield* Effect.promise(() =>
           fs.writeFile(
@@ -29,7 +35,8 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
             JSON.stringify([
               {
                 source: "OPENCODE_API_KEY",
-                key: "key1",
+                key_hint: "***key1",
+                key_hash: keyHash,
                 startTime: now - 1000,
                 endTime: now + 7_200_000, // 2 hours from now
               },
@@ -68,8 +75,14 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
         expect(result.stderr).not.toContain("/$bunfs/")
 
         // throttle.json should now have key1
+        const keyHash = yield* Effect.promise(() => hashKey("key1"))
         const data = JSON.parse(yield* Effect.promise(() => fs.readFile(throttleFile, "utf8")))
-        expect(data.some((r: any) => r.key === "key1" && r.source === "OPENCODE_API_KEY")).toBe(true)
+        expect(
+          data.some(
+            (r: { key_hash: string; source: string }) => r.key_hash === keyHash && r.source === "OPENCODE_API_KEY",
+          ),
+        ).toBe(true)
+        expect(JSON.stringify(data)).not.toContain("\"key\"")
       }),
     60_000,
   )
@@ -109,13 +122,27 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
       Effect.gen(function* () {
         const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
         const now = Date.now()
+        const key1Hash = yield* Effect.promise(() => hashKey("key1"))
+        const key2Hash = yield* Effect.promise(() => hashKey("key2"))
         yield* Effect.promise(() => fs.mkdir(path.dirname(throttleFile), { recursive: true }))
         yield* Effect.promise(() =>
           fs.writeFile(
             throttleFile,
             JSON.stringify([
-              { source: "OPENCODE_API_KEY", key: "key1", startTime: now - 1000, endTime: now + 7_200_000 },
-              { source: "OPENCODE_API_KEY", key: "key2", startTime: now - 1000, endTime: now + 7_200_000 },
+              {
+                source: "OPENCODE_API_KEY",
+                key_hint: "***key1",
+                key_hash: key1Hash,
+                startTime: now - 1000,
+                endTime: now + 7_200_000,
+              },
+              {
+                source: "OPENCODE_API_KEY",
+                key_hint: "***key2",
+                key_hash: key2Hash,
+                startTime: now - 1000,
+                endTime: now + 7_200_000,
+              },
             ]),
           ),
         )
