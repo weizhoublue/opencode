@@ -53,12 +53,34 @@ export function isQuotaOrRateLimitPayload(value: unknown): boolean {
   return false
 }
 
+type SerializedSessionAPIError = {
+  name: "APIError"
+  data: Record<string, unknown>
+}
+
+function isSerializedSessionAPIError(error: unknown): error is SerializedSessionAPIError {
+  return isRecord(error) && error.name === "APIError" && isRecord(error.data)
+}
+
 export function isQuotaOrRateLimitAPIError(error: unknown): boolean {
-  if (!isRecord(error) || error.name !== "APIError" || !isRecord(error.data)) return false
+  if (!isSerializedSessionAPIError(error)) return false
   if (error.data.statusCode !== 429) return false
   const body = text(error.data.responseBody)
   if (isQuotaOrRateLimitPayload(parseJSON(body))) return true
   return /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i.test(body)
+}
+
+export function isKeyRotationQuotaError(error: unknown): boolean {
+  if (isQuotaOrRateLimitAPIError(error)) return true
+  if (!isRecord(error) || !isRecord(error.data)) return false
+  const message = text(error.data.message)
+  if (isQuotaOrRateLimitPayload(parseJSON(message))) return true
+  return /rate increased too quickly|rate limit|too many requests/i.test(message)
+}
+
+export function isInvalidKeyAPIError(error: unknown): boolean {
+  if (!isSerializedSessionAPIError(error)) return false
+  return error.data.statusCode === 401
 }
 
 export function isQuotaOrRateLimitRetryStatus(status: unknown): boolean {
@@ -110,6 +132,10 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
 export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+
+  if (process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true" && process.env.OPENCODE_THROTTLE_ENABLE !== "false") {
+    if (isKeyRotationQuotaError(error)) return undefined
+  }
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
