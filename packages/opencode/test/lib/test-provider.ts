@@ -14,7 +14,7 @@ export function testProviderConfig(llmUrl: string) {
       test: {
         name: "Test",
         id: "test",
-        env: [],
+        env: ["OPENCODE_API_KEY"],
         npm: "@ai-sdk/openai-compatible",
         models: {
           "test-model": {
@@ -30,7 +30,7 @@ export function testProviderConfig(llmUrl: string) {
             options: {},
           },
         },
-        options: { apiKey: "test-key", baseURL: llmUrl },
+        options: { baseURL: llmUrl },
       },
     },
   }

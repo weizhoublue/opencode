@@ -18,6 +18,7 @@ type Flow =
 type Hit = {
   url: URL
   body: Record<string, unknown>
+  headers: Record<string, string>
 }
 
 type Match = (hit: Hit) => boolean
@@ -597,10 +598,11 @@ function item(input: Item | Reply) {
   return input instanceof Reply ? input.item() : input
 }
 
-function hit(url: string, body: unknown) {
+function hit(url: string, body: unknown, headers?: Record<string, string>) {
   return {
     url: new URL(url, "http://localhost"),
     body: body && typeof body === "object" ? (body as Record<string, unknown>) : {},
+    headers: headers ?? {},
   } satisfies Hit
 }
 
@@ -622,6 +624,8 @@ namespace TestLLMServer {
     readonly reason: (value: string, opts?: { text?: string; usage?: Usage }) => Effect.Effect<void>
     readonly fail: (message?: unknown) => Effect.Effect<void>
     readonly error: (status: number, body: unknown) => Effect.Effect<void>
+    readonly success: (value: string, opts?: { usage?: Usage }) => Effect.Effect<void>
+    readonly errorForKey: (key: string, status: number, body: unknown) => Effect.Effect<void>
     readonly hang: Effect.Effect<void>
     readonly hold: (value: string, wait: PromiseLike<unknown>) => Effect.Effect<void>
     readonly reset: Effect.Effect<void>
@@ -665,14 +669,16 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         const index = list.findIndex((entry) => !entry.match || entry.match(hit))
         if (index === -1) return
         const first = list[index]
-        list = [...list.slice(0, index), ...list.slice(index + 1)]
+        if (!first.match) {
+          list = [...list.slice(0, index), ...list.slice(index + 1)]
+        }
         return first.item
       }
 
       const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses") {
         const req = yield* HttpServerRequest.HttpServerRequest
         const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
-        const current = hit(req.originalUrl, body)
+        const current = hit(req.originalUrl, body, req.headers)
         if (isTitleRequest(body)) {
           hits = [...hits, current]
           yield* notify()
@@ -749,6 +755,18 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         }),
         error: Effect.fn("TestLLMServer.error")(function* (status: number, body: unknown) {
           queue(httpError(status, body))
+        }),
+        success: Effect.fn("TestLLMServer.success")(function* (value: string, opts?: { usage?: Usage }) {
+          const out = reply().text(value)
+          if (opts?.usage) out.usage(opts.usage)
+          queue(out.stop().item())
+        }),
+        errorForKey: Effect.fn("TestLLMServer.errorForKey")(function* (key: string, status: number, body: unknown) {
+          const match = (h: Hit) => {
+            const auth = h.headers["authorization"] ?? ""
+            return auth === `Bearer ${key}` || auth === key
+          }
+          queueMatch(match, httpError(status, body))
         }),
         hang: Effect.gen(function* () {
           queue(reply().hang().item())
