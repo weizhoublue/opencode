@@ -37,13 +37,13 @@ function keyRotationActive() {
 }
 
 function throwKeyRotation(error: unknown) {
-  if (SessionRetry.isQuotaOrRateLimitAPIError(error)) throw keyRotationRetry("quota_limit")
+  if (SessionRetry.isKeyRotationQuotaError(error)) throw keyRotationRetry("quota_limit")
   if (SessionRetry.isInvalidKeyAPIError(error)) throw keyRotationRetry("invalid_key")
 }
 
 function noteRotationFromError(error: unknown, pendingRotation: { current?: KeyRotationRetry }) {
   if (!keyRotationActive()) return false
-  if (SessionRetry.isQuotaOrRateLimitAPIError(error)) {
+  if (SessionRetry.isKeyRotationQuotaError(error)) {
     pendingRotation.current = keyRotationRetry("quota_limit")
     return true
   }

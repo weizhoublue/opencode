@@ -165,6 +165,16 @@ describe("session.retry quota limits", () => {
     expect(SessionRetry.isQuotaOrRateLimitAPIError(transient)).toBe(false)
   })
 
+  test("isKeyRotationQuotaError recognizes structured messages and verified text fallbacks", () => {
+    expect(
+      SessionRetry.isKeyRotationQuotaError(
+        wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } })),
+      ),
+    ).toBe(true)
+    expect(SessionRetry.isKeyRotationQuotaError(wrap("Request rate increased too quickly"))).toBe(true)
+    expect(SessionRetry.isKeyRotationQuotaError(wrap("service unavailable"))).toBe(false)
+  })
+
   test("isInvalidKeyAPIError matches serialized 401 APIError", () => {
     const invalid = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({

@@ -70,6 +70,14 @@ export function isQuotaOrRateLimitAPIError(error: unknown): boolean {
   return /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i.test(body)
 }
 
+export function isKeyRotationQuotaError(error: unknown): boolean {
+  if (isQuotaOrRateLimitAPIError(error)) return true
+  if (!isRecord(error) || !isRecord(error.data)) return false
+  const message = text(error.data.message)
+  if (isQuotaOrRateLimitPayload(parseJSON(message))) return true
+  return /rate increased too quickly|rate limit|too many requests/i.test(message)
+}
+
 export function isInvalidKeyAPIError(error: unknown): boolean {
   if (!isSerializedSessionAPIError(error)) return false
   return error.data.statusCode === 401
@@ -126,29 +134,7 @@ export function retryable(error: Err, provider: string) {
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
 
   if (process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true" && process.env.OPENCODE_THROTTLE_ENABLE !== "false") {
-    const isQuota =
-      isQuotaOrRateLimitAPIError(error) ||
-      (() => {
-        const msg = isRecord(error.data) ? error.data.message : undefined
-        if (typeof msg === "string") {
-          const lower = msg.toLowerCase()
-          return (
-            lower.includes("rate increased too quickly") ||
-            lower.includes("rate limit") ||
-            lower.includes("too many requests")
-          )
-        }
-        const json = parseJSON(msg)
-        if (json && typeof json === "object") {
-          const code = typeof json.code === "string" ? json.code : ""
-          if (json.type === "error" && json.error?.type === "too_many_requests") return true
-          if (code.includes("exhausted") || code.includes("unavailable")) return true
-          if (json.type === "error" && typeof json.error?.code === "string" && json.error.code.includes("rate_limit"))
-            return true
-        }
-        return false
-      })()
-    if (isQuota) return undefined
+    if (isKeyRotationQuotaError(error)) return undefined
   }
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
