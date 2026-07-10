@@ -20,6 +20,7 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
         expect(result.exitCode).not.toBe(0)
         expect(result.durationMs).toBeLessThan(30_000)
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT: Free usage exceeded")
       }),
     45_000,
   )
@@ -32,6 +33,7 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
         expect(result.exitCode).not.toBe(0)
         expect(result.durationMs).toBeLessThan(30_000)
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT:")
       }),
     45_000,
   )
@@ -50,6 +52,7 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
         expect(result.exitCode).not.toBe(0)
         expect(result.durationMs).toBeLessThan(30_000)
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT: Rate limit exceeded. Please try again later.")
       }),
     45_000,
   )
@@ -68,6 +71,7 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
         expect(result.exitCode).not.toBe(0)
         expect(result.durationMs).toBeLessThan(30_000)
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT: Subscription quota exceeded. Retry in 5min.")
       }),
     45_000,
   )
@@ -90,6 +94,7 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
         expect(result.exitCode).not.toBe(0)
         expect(result.durationMs).toBeLessThan(30_000)
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT:")
       }),
     45_000,
   )
