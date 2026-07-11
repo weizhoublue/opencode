@@ -122,6 +122,9 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         expect(result.stderr).toBe("")
         const events = opencode.parseJsonEvents(result.stdout)
         expect(events.map((event) => event.type)).toContain("error")
+        expect(events.find((event) => event.type === "error")?.error).toMatchObject({
+          message: expect.stringMatching(/^OPENCODE_QUOTA_LIMIT:/),
+        })
         expect(result.durationMs).toBeLessThan(30_000)
       }),
     45_000,
