@@ -1052,7 +1052,6 @@ export const RunCommand = effectCmd({
           Server.Default.reset()
         },
         onExhausted: (error) => {
-          if (args.format === "json") return
           if (error?.reason === "invalid_key") {
             UI.error(`OPENCODE_INVALID_API_KEY: ${error.message ?? "all configured API keys are invalid"}`)
             return
