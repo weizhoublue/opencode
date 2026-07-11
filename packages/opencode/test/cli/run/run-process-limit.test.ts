@@ -113,6 +113,61 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
   )
 
   cliIt.live(
+    "retries five non-quota provider failures before succeeding",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* Effect.forEach(Array.from({ length: 5 }), () =>
+          llm.error(
+            500,
+            { type: "error", error: { type: "server_error", message: "temporary failure" } },
+            { "retry-after-ms": "0" },
+          ),
+        )
+        yield* llm.text("after five retries")
+        const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
+        opencode.expectExit(result, 0)
+        expect(result.stdout).toBe("after five retries\n")
+      }),
+    45_000,
+  )
+
+  cliIt.live(
+    "stops after retry limit for non-quota provider failures",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* Effect.forEach(Array.from({ length: 6 }), () =>
+          llm.error(
+            500,
+            { type: "error", error: { type: "server_error", message: "temporary failure" } },
+            { "retry-after-ms": "0" },
+          ),
+        )
+        const result = yield* opencode.run("say hi", { timeoutMs: 30_000 })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("OPENCODE_RETRY_LIMIT:")
+        expect(result.durationMs).toBeLessThan(30_000)
+      }),
+    45_000,
+  )
+
+  cliIt.live(
+    "stops immediately when Retry-After exceeds retry deadline",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* llm.error(
+          500,
+          { type: "error", error: { type: "server_error", message: "temporary failure" } },
+          { "retry-after": "121" },
+        )
+        const result = yield* opencode.run("say hi", { timeoutMs: 12_000 })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("OPENCODE_RETRY_LIMIT:")
+        expect(result.durationMs).toBeLessThan(10_000)
+      }),
+    45_000,
+  )
+
+  cliIt.live(
     "--format json emits an error and exits nonzero for provider limit retries",
     ({ llm, opencode }) =>
       Effect.gen(function* () {
@@ -126,6 +181,31 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
           message: expect.stringMatching(/^OPENCODE_QUOTA_LIMIT:/),
         })
         expect(result.durationMs).toBeLessThan(30_000)
+      }),
+    45_000,
+  )
+
+  cliIt.live(
+    "--format json emits retry limit details after sixth non-quota provider failure",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* Effect.forEach(Array.from({ length: 6 }), () =>
+          llm.error(
+            500,
+            { type: "error", error: { type: "server_error", message: "temporary failure" } },
+            { "retry-after-ms": "0" },
+          ),
+        )
+        const result = yield* opencode.run("say hi", { format: "json", timeoutMs: 30_000 })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toBe("")
+        const events = opencode.parseJsonEvents(result.stdout)
+        expect(events.find((event) => event.type === "error")?.error).toMatchObject({
+          type: "retry",
+          message: expect.stringMatching(/^OPENCODE_RETRY_LIMIT:/),
+          attempt: expect.any(Number),
+          next: expect.any(Number),
+        })
       }),
     45_000,
   )
