@@ -47,7 +47,7 @@ export function createThrottleStore(options: StoreOptions) {
     const record = records.find((r) => r.source === source && r.key_hash === keyHash)
     if (!record) return false
     if (now < record.endTime) return true
-    void cleanExpired(source, key)
+    await cleanExpired(source, key)
     return false
   }
 
