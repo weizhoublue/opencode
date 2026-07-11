@@ -63,19 +63,26 @@ function isSerializedSessionAPIError(error: unknown): error is SerializedSession
 }
 
 export function isQuotaOrRateLimitAPIError(error: unknown): boolean {
-  if (!isSerializedSessionAPIError(error)) return false
-  if (error.data.statusCode !== 429) return false
+  if (!isRecord(error) || !isRecord(error.data)) return false
   const body = text(error.data.responseBody)
   if (isQuotaOrRateLimitPayload(parseJSON(body))) return true
-  return /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i.test(body)
+  const message = text(error.data.message)
+  if (isQuotaOrRateLimitPayload(parseJSON(message))) return true
+  // OpenCode Go's production quota response was reproduced with the limit only
+  // in message. Keep this alongside the structured checks; responseBody and
+  // statusCode are not reliable enough to decide whether to exit or rotate.
+  if (/usage limit reached.*enable usage from your available balance/i.test(message)) return true
+  if (/rate increased too quickly|rate limit|too many requests/i.test(message)) return true
+  if (error.data.statusCode === 429) {
+    return /insufficient[-_\s]?quota|quota[-_\s]?exceeded|rate increased too quickly|rate limit|too many requests/i.test(
+      `${body}\n${message}`,
+    )
+  }
+  return false
 }
 
 export function isKeyRotationQuotaError(error: unknown): boolean {
-  if (isQuotaOrRateLimitAPIError(error)) return true
-  if (!isRecord(error) || !isRecord(error.data)) return false
-  const message = text(error.data.message)
-  if (isQuotaOrRateLimitPayload(parseJSON(message))) return true
-  return /rate increased too quickly|rate limit|too many requests/i.test(message)
+  return isQuotaOrRateLimitAPIError(error)
 }
 
 export function isInvalidKeyAPIError(error: unknown): boolean {
@@ -89,7 +96,10 @@ export function isQuotaOrRateLimitRetryStatus(status: unknown): boolean {
     const reason = text(status.action.reason)
     if (reason === "free_tier_limit" || reason === "account_rate_limit") return true
   }
-  return /rate limit|too many requests|quota exceeded/i.test(text(status.message))
+  // The reproduced OpenCode Go retry status says "weekly usage limit reached",
+  // not "rate limit" or "quota exceeded". Keep this fallback when changing
+  // retry wording so non-interactive runs do not wait forever.
+  return /rate limit|too many requests|quota exceeded|usage limit reached/i.test(text(status.message))
 }
 
 function cap(ms: number) {
@@ -133,7 +143,7 @@ export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
 
-  if (process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true" && process.env.OPENCODE_THROTTLE_ENABLE !== "false") {
+  if (process.env.OPENCODE_KEY_ROTATION_ACTIVE === "true") {
     if (isKeyRotationQuotaError(error)) return undefined
   }
   if (SessionV1.APIError.isInstance(error)) {
