@@ -7,8 +7,21 @@ type ThrottleRecord = {
   source: string
   key_hint: string
   key_hash: string
-  startTime: number
-  endTime: number
+  startTime: string
+  endTime: string
+}
+
+function formatLocalTime(time: number) {
+  const date = new Date(time)
+  const offset = -date.getTimezoneOffset()
+  const sign = offset >= 0 ? "+" : "-"
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, "0")}${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`
+}
+
+function isExpired(record: ThrottleRecord, now: number) {
+  const endTime = Date.parse(record.endTime)
+  return Number.isNaN(endTime) || now >= endTime
 }
 
 type StoreOptions = {
@@ -46,8 +59,8 @@ export function createThrottleStore(options: StoreOptions) {
     const keyHash = await hashKey(key)
     const record = records.find((r) => r.source === source && r.key_hash === keyHash)
     if (!record) return false
-    if (now < record.endTime) return true
-    void cleanExpired(source, key)
+    if (!isExpired(record, now)) return true
+    await cleanExpired(source, key)
     return false
   }
 
@@ -72,8 +85,8 @@ export function createThrottleStore(options: StoreOptions) {
         source,
         key_hint: `***${key.slice(-8)}`,
         key_hash: keyHash,
-        startTime: now,
-        endTime,
+        startTime: formatLocalTime(now),
+        endTime: formatLocalTime(endTime),
       }
       if (idx >= 0) records[idx] = record
       else records.push(record)
@@ -98,7 +111,7 @@ export function createThrottleStore(options: StoreOptions) {
       const records = await readRecords()
       const now = Date.now()
       const keyHash = await hashKey(key)
-      const filtered = records.filter((r) => !(r.source === source && r.key_hash === keyHash && now >= r.endTime))
+      const filtered = records.filter((r) => !(r.source === source && r.key_hash === keyHash && isExpired(r, now)))
       await writeRecords(filtered)
     } finally {
       await lease.release()
