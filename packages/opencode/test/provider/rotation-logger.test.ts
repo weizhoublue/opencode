@@ -22,14 +22,9 @@ afterEach(async () => {
   delete process.env.OPENCODE_PRINT_LOGS
 })
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
 describe("RotationLogger.log", () => {
   it("appends a line to welan.txt with correct format", async () => {
     rotationLogger.log("info", "test message")
-    await sleep(50) // fire-and-forget: wait for write
     const content = await fs.readFile(welanFile, "utf8")
     expect(content).toMatch(/\[.*\] \[.*\] \[INFO\] test message\n/)
   })
@@ -37,20 +32,17 @@ describe("RotationLogger.log", () => {
   it("appends multiple lines in order", async () => {
     rotationLogger.log("info", "first")
     rotationLogger.log("warn", "second")
-    await sleep(50)
     const content = await fs.readFile(welanFile, "utf8")
     const lines = content.trim().split("\n")
     expect(lines).toHaveLength(2)
     expect(lines[0]).toContain("[INFO] first")
     expect(lines[1]).toContain("[WARN] second")
-    // Both lines share the same PID prefix (first column)
     const prefix = lines[0].split("] [")[0].slice(1)
     expect(lines[1].startsWith(`[${prefix}]`)).toBe(true)
   })
 
   it("also writes to the regular opencode log format", async () => {
     rotationLogger.log("warn", "regular log message")
-    await sleep(50)
     const content = await fs.readFile(opencodeLogFile, "utf8")
     expect(content).toContain("level=WARN")
     expect(content).toMatch(/run=[^\s]+/)
@@ -60,11 +52,27 @@ describe("RotationLogger.log", () => {
   it("does nothing when OPENCODE_WELAN_LOG=false", async () => {
     process.env.OPENCODE_WELAN_LOG = "false"
     rotationLogger.log("info", "should not appear")
-    await sleep(50)
     const exists = await fs
       .stat(welanFile)
       .then(() => true)
       .catch(() => false)
     expect(exists).toBe(false)
+  })
+
+  it("writes to stderr immediately when OPENCODE_PRINT_LOGS=1", () => {
+    process.env.OPENCODE_PRINT_LOGS = "1"
+    const chunks: string[] = []
+    const original = process.stderr.write
+    process.stderr.write = ((chunk: string) => {
+      chunks.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
+    try {
+      rotationLogger.log("error", "key-rotation: immediate stderr")
+      expect(chunks.join("")).toContain("level=ERROR")
+      expect(chunks.join("")).toContain("key-rotation: immediate stderr")
+    } finally {
+      process.stderr.write = original
+    }
   })
 })
