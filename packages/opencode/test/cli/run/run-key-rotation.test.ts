@@ -13,6 +13,14 @@ async function hashKey(key: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
+function localTime(time: number) {
+  const date = new Date(time)
+  const offset = -date.getTimezoneOffset()
+  const sign = offset >= 0 ? "+" : "-"
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, "0")}${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`
+}
+
 beforeEach(() => {
   delete process.env.OPENCODE_API_KEY
 })
@@ -39,8 +47,8 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
                 source: "OPENCODE_API_KEY",
                 key_hint: "***key1",
                 key_hash: keyHash,
-                startTime: now - 1000,
-                endTime: now + 7_200_000, // 2 hours from now
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000), // 2 hours from now
               },
             ]),
           ),
@@ -138,15 +146,15 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
                 source: "OPENCODE_API_KEY",
                 key_hint: "***key1",
                 key_hash: key1Hash,
-                startTime: now - 1000,
-                endTime: now + 7_200_000,
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000),
               },
               {
                 source: "OPENCODE_API_KEY",
                 key_hint: "***key2",
                 key_hash: key2Hash,
-                startTime: now - 1000,
-                endTime: now + 7_200_000,
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000),
               },
             ]),
           ),
