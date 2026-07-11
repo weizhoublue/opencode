@@ -833,7 +833,10 @@ export const RunCommand = effectCmd({
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
               const quota = SessionRetry.isKeyRotationQuotaError(props.error)
-              if (noteRotationFromError(props.error, pendingRotation, err)) break
+              if (noteRotationFromError(props.error, pendingRotation, err)) {
+                emit("error", { error: quota ? quotaErrorPayload(props.error, err) : props.error })
+                break
+              }
               if (emit("error", { error: quota ? quotaErrorPayload(props.error, err) : props.error })) {
                 if (limit) return error
                 continue
@@ -852,6 +855,7 @@ export const RunCommand = effectCmd({
                 // never exited. Abort before exiting or rotating the API key.
                 await client.session.abort({ sessionID })
                 if (keyRotationActive()) {
+                  emit("error", { error: quotaErrorPayload(status, status.message) })
                   pendingRotation.current = keyRotationRetry("quota_limit")
                   break
                 }
@@ -1048,6 +1052,7 @@ export const RunCommand = effectCmd({
           Server.Default.reset()
         },
         onExhausted: (error) => {
+          if (args.format === "json") return
           if (error?.reason === "invalid_key") {
             UI.error(`OPENCODE_INVALID_API_KEY: ${error.message ?? "all configured API keys are invalid"}`)
             return
