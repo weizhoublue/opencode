@@ -29,6 +29,7 @@ import { runWithKeyRotation } from "./run/key-rotation"
 import { SessionRetry } from "@/session/retry"
 import { isKeyRotationRetry, keyRotationRetry, type KeyRotationRetry } from "@/provider/key-rotation-retry"
 import { disposeInstance } from "@/effect/instance-registry"
+import { isRecord } from "@/util/record"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -38,6 +39,23 @@ function keyRotationActive() {
 
 function quotaError(message: string) {
   return `OPENCODE_QUOTA_LIMIT: ${message}`
+}
+
+const RUN_RETRY_MAX_ATTEMPTS = 5
+const RUN_RETRY_MAX_WAIT = 120_000
+
+function retryLimitError(message: string) {
+  return `OPENCODE_RETRY_LIMIT: ${message}`
+}
+
+function quotaErrorPayload(error: unknown, message: string) {
+  if (!isRecord(error)) return { message: quotaError(message) }
+  return { ...error, message: quotaError(message) }
+}
+
+function retryLimitErrorPayload(error: unknown, message: string) {
+  if (!isRecord(error)) return { message: retryLimitError(message) }
+  return { ...error, message: retryLimitError(message) }
 }
 
 function throwKeyRotation(error: unknown, message: string) {
@@ -705,6 +723,7 @@ export const RunCommand = effectCmd({
           process.exit(1)
         }
         const sessionID = sess.id
+        let retryDeadline: number | undefined
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -814,8 +833,11 @@ export const RunCommand = effectCmd({
               error = error ? error + EOL + err : err
               const limit = SessionRetry.isQuotaOrRateLimitAPIError(props.error)
               const quota = SessionRetry.isKeyRotationQuotaError(props.error)
-              if (noteRotationFromError(props.error, pendingRotation, err)) break
-              if (emit("error", { error: props.error })) {
+              if (noteRotationFromError(props.error, pendingRotation, err)) {
+                emit("error", { error: quota ? quotaErrorPayload(props.error, err) : props.error })
+                break
+              }
+              if (emit("error", { error: quota ? quotaErrorPayload(props.error, err) : props.error })) {
                 if (limit) return error
                 continue
               }
@@ -827,13 +849,29 @@ export const RunCommand = effectCmd({
               const status = event.properties.status
               if (status.type === "retry" && SessionRetry.isQuotaOrRateLimitRetryStatus(status)) {
                 error = error ? error + EOL + status.message : status.message
+                // Returning from this event loop alone leaves the in-process
+                // session retry alive. This was reproduced with OpenCode Go
+                // quota exhaustion, where `opencode run` printed the error but
+                // never exited. Abort before exiting or rotating the API key.
+                await client.session.abort({ sessionID })
                 if (keyRotationActive()) {
+                  emit("error", { error: quotaErrorPayload(status, status.message) })
                   pendingRotation.current = keyRotationRetry("quota_limit")
                   break
                 }
-                if (emit("error", { error: status })) return error
+                if (emit("error", { error: quotaErrorPayload(status, status.message) })) return error
                 UI.error(quotaError(status.message))
                 return error
+              }
+              if (status.type === "retry") {
+                if (retryDeadline === undefined || status.attempt === 1) retryDeadline = Date.now() + RUN_RETRY_MAX_WAIT
+                if (status.attempt > RUN_RETRY_MAX_ATTEMPTS || status.next > retryDeadline) {
+                  error = error ? error + EOL + status.message : status.message
+                  await client.session.abort({ sessionID })
+                  if (emit("error", { error: retryLimitErrorPayload(status, status.message) })) return error
+                  UI.error(retryLimitError(status.message))
+                  return error
+                }
               }
               if (status.type === "idle") {
                 break
@@ -1014,13 +1052,12 @@ export const RunCommand = effectCmd({
           Server.Default.reset()
         },
         onExhausted: (error) => {
+          if (args.format === "json") return
           if (error?.reason === "invalid_key") {
             UI.error(`OPENCODE_INVALID_API_KEY: ${error.message ?? "all configured API keys are invalid"}`)
             return
           }
-          UI.error(
-            quotaError(error?.message ?? "all configured API keys are exhausted or throttled"),
-          )
+          UI.error(quotaError(error?.message ?? "all configured API keys are exhausted or throttled"))
         },
       })
     })
