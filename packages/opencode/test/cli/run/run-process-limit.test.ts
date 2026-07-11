@@ -174,7 +174,7 @@ describe("opencode run provider limits (non-interactive subprocess)", () => {
         yield* llm.error(429, { type: "error", error: { type: "too_many_requests" } })
         const result = yield* opencode.run("say hi", { format: "json", timeoutMs: 30_000 })
         expect(result.exitCode).not.toBe(0)
-        expect(result.stderr).toBe("")
+        expect(result.stderr).toContain("OPENCODE_QUOTA_LIMIT:")
         const events = opencode.parseJsonEvents(result.stdout)
         expect(events.map((event) => event.type)).toContain("error")
         expect(events.find((event) => event.type === "error")?.error).toMatchObject({
