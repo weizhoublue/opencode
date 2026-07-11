@@ -175,6 +175,102 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
   )
 
   cliIt.live(
+    "--format json still prints key exhaustion on stderr",
+    ({ opencode, home }) =>
+      Effect.gen(function* () {
+        const now = Date.now()
+        const key1Hash = yield* Effect.promise(() => hashKey("key1"))
+        const key2Hash = yield* Effect.promise(() => hashKey("key2"))
+        const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
+        yield* Effect.promise(() => fs.mkdir(path.dirname(throttleFile), { recursive: true }))
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            throttleFile,
+            JSON.stringify([
+              {
+                source: "OPENCODE_API_KEY",
+                key_hint: "***key1",
+                key_hash: key1Hash,
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000),
+              },
+              {
+                source: "OPENCODE_API_KEY",
+                key_hint: "***key2",
+                key_hash: key2Hash,
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000),
+              },
+            ]),
+          ),
+        )
+
+        const result = yield* opencode.run("hi", {
+          format: "json",
+          env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true" },
+          timeoutMs: 15_000,
+        })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain(
+          "OPENCODE_QUOTA_LIMIT: all configured API keys are exhausted or throttled",
+        )
+        expect(result.stdout).toBe("")
+      }),
+    30_000,
+  )
+
+  cliIt.live(
+    "writes key-rotation error logs when all keys are throttled at startup",
+    ({ opencode, home }) =>
+      Effect.gen(function* () {
+        const now = Date.now()
+        const key1Hash = yield* Effect.promise(() => hashKey("key1"))
+        const key2Hash = yield* Effect.promise(() => hashKey("key2"))
+        const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
+        const welanLog = path.join(home, ".config", "opencode", "welan-log.txt")
+        yield* Effect.promise(() => fs.mkdir(path.dirname(throttleFile), { recursive: true }))
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            throttleFile,
+            JSON.stringify([
+              {
+                source: "OPENCODE_API_KEY",
+                key_hint: "***key1",
+                key_hash: key1Hash,
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000),
+              },
+              {
+                source: "OPENCODE_API_KEY",
+                key_hint: "***key2",
+                key_hash: key2Hash,
+                startTime: localTime(now - 1000),
+                endTime: localTime(now + 7_200_000),
+              },
+            ]),
+          ),
+        )
+
+        const result = yield* opencode.run("hi", {
+          printLogs: true,
+          env: { OPENCODE_API_KEY: "key1,key2", OPENCODE_THROTTLE_ENABLE: "true" },
+          timeoutMs: 15_000,
+        })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toMatch(/level=INFO.*key-rotation: key .* is throttled, skipping/)
+        expect(result.stderr).toMatch(
+          /level=ERROR.*key-rotation: all OPENCODE_API_KEY keys exhausted or throttled/,
+        )
+
+        const welan = yield* Effect.promise(() => fs.readFile(welanLog, "utf8"))
+        expect(welan).toContain("[INFO] key-rotation: key ***key1 is throttled, skipping")
+        expect(welan).toContain("[INFO] key-rotation: key ***key2 is throttled, skipping")
+        expect(welan).toContain("[ERROR] key-rotation: all OPENCODE_API_KEY keys exhausted or throttled")
+      }),
+    30_000,
+  )
+
+  cliIt.live(
     "prints one quota marker when every key returns a quota limit",
     ({ llm, opencode }) =>
       Effect.gen(function* () {
