@@ -11,7 +11,7 @@ type KeyRotationOptions<T> = {
 
 export async function runWithKeyRotation<T>(options: KeyRotationOptions<T>): Promise<void> {
   const keys = parseKeys()
-  if (keys.length <= 1) {
+  if (keys.length === 0) {
     await options.execute(options.createSdk())
     return
   }
