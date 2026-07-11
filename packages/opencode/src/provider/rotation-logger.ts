@@ -1,5 +1,5 @@
 import path from "path"
-import fs from "fs/promises"
+import fs from "node:fs"
 import { Global } from "@opencode-ai/core/global"
 import { runID } from "@opencode-ai/core/observability/shared"
 
@@ -17,7 +17,6 @@ export function createRotationLogger(options: LoggerOptions) {
   const logDir = () => (typeof options.logDir === "string" ? options.logDir : options.logDir())
   const filePath = () => path.join(configDir(), "welan-log.txt")
   const regularLogPath = () => path.join(logDir(), "opencode.log")
-  let writeChain = Promise.resolve()
 
   function log(level: Level, message: string): void {
     if (process.env.OPENCODE_WELAN_LOG === "false") return
@@ -32,15 +31,13 @@ export function createRotationLogger(options: LoggerOptions) {
       message.startsWith("key-rotation:") ? message : `key-rotation: ${message}`,
       now,
     )
-    writeChain = writeChain
-      .then(() => fs.mkdir(path.dirname(filePath()), { recursive: true }))
-      .then(() => fs.appendFile(filePath(), line))
-      .then(() => fs.mkdir(path.dirname(regularLogPath()), { recursive: true }))
-      .then(() => fs.appendFile(regularLogPath(), regularLine))
-      .then(() => {
-        if (process.env.OPENCODE_PRINT_LOGS === "1") process.stderr.write(regularLine)
-      })
-      .catch(() => {})
+    if (process.env.OPENCODE_PRINT_LOGS === "1") process.stderr.write(regularLine)
+    try {
+      fs.mkdirSync(path.dirname(filePath()), { recursive: true })
+      fs.appendFileSync(filePath(), line)
+      fs.mkdirSync(path.dirname(regularLogPath()), { recursive: true })
+      fs.appendFileSync(regularLogPath(), regularLine)
+    } catch {}
   }
 
   return { log }
