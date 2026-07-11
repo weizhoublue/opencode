@@ -191,25 +191,35 @@ describe("opencode run key rotation (non-interactive subprocess)", () => {
   )
 
   cliIt.live(
-    "single key exits nonzero without writing throttle.json when rate limited",
+    "single key writes throttle.json and later invocation skips it after quota limit",
     ({ llm, opencode, home }) =>
       Effect.gen(function* () {
         const throttleFile = path.join(home, ".config", "opencode", "throttle.json")
         yield* llm.error(429, { type: "error", error: { type: "RateLimitError", message: "Rate limit" } })
 
-        const result = yield* opencode.run("say hi", {
+        const first = yield* opencode.run("say hi", {
           env: { OPENCODE_API_KEY: "key1", OPENCODE_THROTTLE_ENABLE: "true" },
           timeoutMs: 30_000,
         })
-        expect(result.exitCode).not.toBe(0)
+        expect(first.exitCode).not.toBe(0)
 
-        const exists = yield* Effect.promise(() =>
-          fs
-            .stat(throttleFile)
-            .then(() => true)
-            .catch(() => false),
+        const keyHash = yield* Effect.promise(() => hashKey("key1"))
+        const data = JSON.parse(yield* Effect.promise(() => fs.readFile(throttleFile, "utf8")))
+        expect(
+          data.some(
+            (record: { key_hash: string; source: string }) =>
+              record.key_hash === keyHash && record.source === "OPENCODE_API_KEY",
+          ),
+        ).toBe(true)
+
+        const second = yield* opencode.run("say hi", {
+          env: { OPENCODE_API_KEY: "key1", OPENCODE_THROTTLE_ENABLE: "true" },
+          timeoutMs: 30_000,
+        })
+        expect(second.exitCode).not.toBe(0)
+        expect(second.stderr).toContain(
+          "OPENCODE_QUOTA_LIMIT: all configured API keys are exhausted or throttled",
         )
-        expect(exists).toBe(false)
       }),
     45_000,
   )
