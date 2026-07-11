@@ -134,9 +134,7 @@ describe("session.retry quota limits", () => {
         }),
       ).toBe(true)
     }
-    expect(
-      SessionRetry.isQuotaOrRateLimitPayload({ type: "error", error: { type: "too_many_requests" } }),
-    ).toBe(true)
+    expect(SessionRetry.isQuotaOrRateLimitPayload({ type: "error", error: { type: "too_many_requests" } })).toBe(true)
     expect(SessionRetry.isQuotaOrRateLimitPayload({ code: "insufficient_quota" })).toBe(true)
     expect(SessionRetry.isQuotaOrRateLimitPayload({ error: { message: "no_kv_space" } })).toBe(false)
   })
@@ -163,6 +161,19 @@ describe("session.retry quota limits", () => {
       }).toObject(),
     )
     expect(SessionRetry.isQuotaOrRateLimitAPIError(transient)).toBe(false)
+  })
+
+  test("isQuotaOrRateLimitAPIError matches OpenCode Go usage-limit messages", () => {
+    const limit = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message:
+          "weekly usage limit reached. It will reset in 1 day 23 hours. To continue using this model now, enable usage from your available balance",
+        isRetryable: true,
+        statusCode: 429,
+      }).toObject(),
+    )
+
+    expect(SessionRetry.isQuotaOrRateLimitAPIError(limit)).toBe(true)
   })
 
   test("isKeyRotationQuotaError recognizes structured messages and verified text fallbacks", () => {
@@ -257,6 +268,18 @@ describe("session.retry quota limits", () => {
     ).toBe(true)
   })
 
+  test("isQuotaOrRateLimitRetryStatus matches OpenCode Go usage-limit messages", () => {
+    expect(
+      SessionRetry.isQuotaOrRateLimitRetryStatus({
+        type: "retry",
+        attempt: 1,
+        message:
+          "weekly usage limit reached. It will reset in 1 day 23 hours. To continue using this model now, enable usage from your available balance",
+        next: Date.now() + 60_000,
+      }),
+    ).toBe(true)
+  })
+
   test("maps RateLimitError to account_rate_limit retry action", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({
@@ -296,6 +319,29 @@ describe("session.retry quota limits", () => {
 })
 
 describe("session.retry.retryable", () => {
+  test("does not retry quota errors during key rotation when throttle persistence is disabled", () => {
+    const rotation = process.env.OPENCODE_KEY_ROTATION_ACTIVE
+    const throttle = process.env.OPENCODE_THROTTLE_ENABLE
+    process.env.OPENCODE_KEY_ROTATION_ACTIVE = "true"
+    process.env.OPENCODE_THROTTLE_ENABLE = "false"
+    try {
+      const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+        new SessionV1.APIError({
+          message:
+            "weekly usage limit reached. It will reset in 1 day 23 hours. To continue using this model now, enable usage from your available balance",
+          isRetryable: true,
+          statusCode: 429,
+        }).toObject(),
+      )
+      expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+    } finally {
+      if (rotation === undefined) delete process.env.OPENCODE_KEY_ROTATION_ACTIVE
+      else process.env.OPENCODE_KEY_ROTATION_ACTIVE = rotation
+      if (throttle === undefined) delete process.env.OPENCODE_THROTTLE_ENABLE
+      else process.env.OPENCODE_THROTTLE_ENABLE = throttle
+    }
+  })
+
   test("maps too_many_requests json messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Too Many Requests" })
