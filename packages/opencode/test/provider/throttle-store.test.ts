@@ -59,6 +59,7 @@ describe("ThrottleStore.isThrottled", () => {
       ]),
     )
     expect(await throttleStore.isThrottled("OPENCODE_API_KEY", "key1")).toBe(false)
+    expect(JSON.parse(await fs.readFile(throttleFile, "utf8"))).toEqual([])
   })
 
   it("returns false for a different key not in the file", async () => {
@@ -93,7 +94,7 @@ describe("ThrottleStore.addThrottle", () => {
     expect(data[0].source).toBe("OPENCODE_API_KEY")
     expect(data[0].key_hint).toBe("***12345678")
     expect(data[0].key_hash).toBe(await hashKey(key))
-    expect(JSON.stringify(data)).not.toContain("\"key\"")
+    expect(JSON.stringify(data)).not.toContain('"key"')
     expect(JSON.stringify(data)).not.toContain(key)
     expect(data[0].endTime - data[0].startTime).toBe(120 * 60 * 1000)
   })
