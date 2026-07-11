@@ -14,6 +14,14 @@ async function hashKey(key: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
+function localTime(time: number) {
+  const date = new Date(time)
+  const offset = -date.getTimezoneOffset()
+  const sign = offset >= 0 ? "+" : "-"
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, "0")}${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`
+}
+
 beforeEach(async () => {
   await fs.mkdir(configDir, { recursive: true })
 })
@@ -36,8 +44,8 @@ describe("ThrottleStore.isThrottled", () => {
           source: "OPENCODE_API_KEY",
           key_hint: "***key1",
           key_hash: await hashKey("key1"),
-          startTime: now - 1000,
-          endTime: now + 60_000,
+          startTime: localTime(now - 1000),
+          endTime: localTime(now + 60_000),
         },
       ]),
     )
@@ -53,12 +61,13 @@ describe("ThrottleStore.isThrottled", () => {
           source: "OPENCODE_API_KEY",
           key_hint: "***key1",
           key_hash: await hashKey("key1"),
-          startTime: now - 120_000,
-          endTime: now - 1000,
+          startTime: localTime(now - 120_000),
+          endTime: localTime(now - 1000),
         },
       ]),
     )
     expect(await throttleStore.isThrottled("OPENCODE_API_KEY", "key1")).toBe(false)
+    expect(JSON.parse(await fs.readFile(throttleFile, "utf8"))).toEqual([])
   })
 
   it("returns false for a different key not in the file", async () => {
@@ -70,8 +79,8 @@ describe("ThrottleStore.isThrottled", () => {
           source: "OPENCODE_API_KEY",
           key_hint: "***key1",
           key_hash: await hashKey("key1"),
-          startTime: now - 1000,
-          endTime: now + 60_000,
+          startTime: localTime(now - 1000),
+          endTime: localTime(now + 60_000),
         },
       ]),
     )
@@ -93,9 +102,11 @@ describe("ThrottleStore.addThrottle", () => {
     expect(data[0].source).toBe("OPENCODE_API_KEY")
     expect(data[0].key_hint).toBe("***12345678")
     expect(data[0].key_hash).toBe(await hashKey(key))
-    expect(JSON.stringify(data)).not.toContain("\"key\"")
+    expect(JSON.stringify(data)).not.toContain('"key"')
     expect(JSON.stringify(data)).not.toContain(key)
-    expect(data[0].endTime - data[0].startTime).toBe(120 * 60 * 1000)
+    expect(data[0].startTime).toMatch(/\.\d{3}[+-]\d{2}:\d{2}$/)
+    expect(data[0].endTime).toMatch(/\.\d{3}[+-]\d{2}:\d{2}$/)
+    expect(Date.parse(data[0].endTime) - Date.parse(data[0].startTime)).toBe(120 * 60 * 1000)
   })
 
   it("upserts: updates existing record for same key", async () => {
@@ -103,7 +114,7 @@ describe("ThrottleStore.addThrottle", () => {
     await throttleStore.addThrottle("OPENCODE_API_KEY", "key1", 120)
     const data = JSON.parse(await fs.readFile(throttleFile, "utf8"))
     expect(data).toHaveLength(1)
-    expect(data[0].endTime - data[0].startTime).toBe(120 * 60 * 1000)
+    expect(Date.parse(data[0].endTime) - Date.parse(data[0].startTime)).toBe(120 * 60 * 1000)
   })
 
   it("appends: keeps other keys when adding a new one", async () => {
@@ -111,6 +122,12 @@ describe("ThrottleStore.addThrottle", () => {
     await throttleStore.addThrottle("OPENCODE_API_KEY", "key2", 120)
     const data = JSON.parse(await fs.readFile(throttleFile, "utf8"))
     expect(data).toHaveLength(2)
+  })
+
+  it("removes an expired record when it is checked", async () => {
+    await throttleStore.addThrottle("OPENCODE_API_KEY", "key1", -1)
+    expect(await throttleStore.isThrottled("OPENCODE_API_KEY", "key1")).toBe(false)
+    expect(JSON.parse(await fs.readFile(throttleFile, "utf8"))).toEqual([])
   })
 })
 
@@ -124,15 +141,15 @@ describe("ThrottleStore.cleanExpired", () => {
           source: "OPENCODE_API_KEY",
           key_hint: "***key1",
           key_hash: await hashKey("key1"),
-          startTime: now - 120_000,
-          endTime: now - 1000,
+          startTime: localTime(now - 120_000),
+          endTime: localTime(now - 1000),
         },
         {
           source: "OPENCODE_API_KEY",
           key_hint: "***key2",
           key_hash: await hashKey("key2"),
-          startTime: now - 1000,
-          endTime: now + 60_000,
+          startTime: localTime(now - 1000),
+          endTime: localTime(now + 60_000),
         },
       ]),
     )
@@ -146,7 +163,7 @@ describe("ThrottleStore.cleanExpired", () => {
     const now = Date.now()
     await fs.writeFile(
       throttleFile,
-      JSON.stringify([{ source: "OPENCODE_API_KEY", key: "key2", startTime: now, endTime: now + 60_000 }]),
+      JSON.stringify([{ source: "OPENCODE_API_KEY", key: "key2", startTime: localTime(now), endTime: localTime(now + 60_000) }]),
     )
     await throttleStore.cleanExpired("OPENCODE_API_KEY", "key1")
     const data = JSON.parse(await fs.readFile(throttleFile, "utf8"))
